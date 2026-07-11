@@ -13,7 +13,8 @@ read from a configurable ID-token claim (`OIDC_IDENTITY_CLAIM`, defaulting to `e
 
 The ClickHouse connection uses a **single service credential** (already in `internal/config`);
 OAuth gates *access to the server*, it does not map end-users to per-user ClickHouse identities.
-Every authorized query runs under that one connection, behind the ADR-0001 read-only guard.
+Every authorized query runs under that one connection, whose ClickHouse privileges are the
+authorization boundary (ADR-0006).
 
 ## Considered options
 
