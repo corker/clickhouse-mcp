@@ -38,6 +38,9 @@ func runQuery(ctx context.Context, conn driver.Conn, args runQueryArgs) (*mcp.Ca
 	if class == query.ClassRejected {
 		return nil, query.Result{}, fmt.Errorf("only read-only queries are allowed (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, EXISTS)")
 	}
+	if query.HasUnsupportedOutputClause(args.SQL) {
+		return nil, query.Result{}, fmt.Errorf("FORMAT and INTO OUTFILE are not supported; results are returned as structured rows")
+	}
 
 	limit := args.Limit
 	if limit <= 0 {

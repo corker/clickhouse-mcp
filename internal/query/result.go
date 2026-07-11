@@ -34,6 +34,47 @@ func Classify(sql string) StmtClass {
 	}
 }
 
+// HasUnsupportedOutputClause reports whether the query ends with a FORMAT or
+// INTO OUTFILE clause, which redirect output away from the structured rows this
+// tool returns. Caught early for a clear message instead of a confusing wrapped-
+// subquery syntax error.
+//
+// Both are terminal clauses, so it matches only "FORMAT <name>" or "INTO OUTFILE"
+// as the tail of the (semicolon-trimmed) statement. This avoids false positives
+// on a column named `format`, `formatDateTime(...)`, or a mid-query token, at the
+// cost of not catching the (invalid) case where they appear mid-statement — which
+// ClickHouse rejects anyway.
+func HasUnsupportedOutputClause(sql string) bool {
+	upper := strings.ToUpper(strings.TrimRight(strings.TrimSpace(sql), "; "))
+	if strings.HasSuffix(upper, "INTO OUTFILE") || strings.Contains(upper, "INTO OUTFILE ") {
+		return true
+	}
+	// FORMAT <name> as the final clause: find the last FORMAT that is a whole
+	// word and is followed only by a single identifier (the format name).
+	idx := strings.LastIndex(upper, "FORMAT ")
+	if idx < 0 {
+		return false
+	}
+	if idx > 0 && isIdentByte(upper[idx-1]) {
+		return false // part of a longer identifier, e.g. formatDateTime
+	}
+	tail := strings.TrimSpace(upper[idx+len("FORMAT "):])
+	return tail != "" && isIdentifier(tail)
+}
+
+func isIdentifier(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !isIdentByte(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
 // leadingKeyword returns the upper-cased first token, skipping leading
 // whitespace and a leading line/block comment.
 func leadingKeyword(sql string) string {

@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/corker/clickhouse-mcp/internal/clickhouse/testsupport"
@@ -109,5 +110,24 @@ func TestRunQuery_RejectsWrites(t *testing.T) {
 		if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: sql}); err == nil {
 			t.Errorf("%q should be rejected by the allowlist", sql)
 		}
+	}
+}
+
+func TestRunQuery_RejectsOutputClauses(t *testing.T) {
+	conn := testsupport.Start(t)
+	ctx := context.Background()
+	for _, sql := range []string{"SELECT 1 FORMAT JSON", "SELECT 1 INTO OUTFILE '/tmp/x'"} {
+		_, _, err := runQuery(ctx, conn, runQueryArgs{SQL: sql})
+		if err == nil {
+			t.Errorf("%q should be rejected", sql)
+			continue
+		}
+		if !strings.Contains(err.Error(), "not supported") {
+			t.Errorf("%q: want clean 'not supported' msg, got: %v", sql, err)
+		}
+	}
+	// A column named format must still WORK (not be rejected).
+	if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: "SELECT formatDateTime(now(),'%Y') AS y"}); err != nil {
+		t.Errorf("formatDateTime should work, got: %v", err)
 	}
 }
