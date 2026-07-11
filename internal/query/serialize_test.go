@@ -3,11 +3,13 @@ package query
 import (
 	"math"
 	"math/big"
+	"net"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/chcol"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
@@ -114,6 +116,10 @@ func TestToJSONValue(t *testing.T) {
 		{"-Inf -> null", math.Inf(-1), "Float64", nil},
 		{"NaN -> null", math.NaN(), "Float64", nil},
 		{"Inf inside array -> null", []float64{1.5, math.Inf(1)}, "Array(Float64)", []any{float64(1.5), nil}},
+		// UUID/IP scan as byte types; render canonical strings, not byte arrays.
+		{"uuid -> canonical string", uuid.MustParse("d592e5b1-7b76-42b0-8663-2b3197fbfc40"), "UUID", "d592e5b1-7b76-42b0-8663-2b3197fbfc40"},
+		{"ipv4 -> dotted string", net.ParseIP("1.2.3.4"), "IPv4", "1.2.3.4"},
+		{"ipv6 -> colon string", net.ParseIP("2001:db8::1"), "IPv6", "2001:db8::1"},
 		// Variant/Dynamic/JSON: the LSP-fix branches — a big int inside a wrapper
 		// type must still become a string, not a lossy JSON number.
 		{"variant uint64 -> string", chcol.NewVariantWithType(uint64(18446744073709551615), "UInt64"), "Variant(UInt64)", "18446744073709551615"},

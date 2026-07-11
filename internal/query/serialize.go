@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"net"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/chcol"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
@@ -43,6 +45,13 @@ func ToJSONValue(v any, dbType string) any {
 		return finiteOrNull(x)
 	case float32:
 		return finiteOrNull(float64(x))
+	case uuid.UUID:
+		// Scans as [16]byte; render the canonical UUID string, not a byte array.
+		return x.String()
+	case net.IP:
+		// IPv4/IPv6 scan as net.IP ([]byte); render the canonical address string.
+		// Must precede the []byte case, which would otherwise emit raw octets.
+		return x.String()
 	case time.Time:
 		// A Date/Date32 has no time-of-day; render it as a calendar date rather
 		// than inventing a midnight-UTC datetime. DateTime/DateTime64 keep RFC3339.
