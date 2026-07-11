@@ -5,160 +5,18 @@ import (
 	"strings"
 )
 
-// StmtClass is how run_query dispatches row bounding, decided by the leading
-// keyword of a statement.
-type StmtClass int
-
-const (
-	// ClassRejected is a statement not on the read-only allowlist.
-	ClassRejected StmtClass = iota
-	// ClassSelect is SELECT/WITH — bounded by wrapping in SELECT * FROM (...) LIMIT n+1.
-	ClassSelect
-	// ClassSmall is SHOW/DESCRIBE/EXPLAIN/EXISTS — inherently small, run as-is.
-	ClassSmall
-)
-
-// Classify is a light UX gate, NOT the security boundary (readonly=2 is).
-// Verified: SELECT/WITH accept the subquery wrap; the ClassSmall statements do
-// not and need no bounding.
-func Classify(sql string) StmtClass {
-	head := leadingKeyword(sql)
-	switch head {
+// CanBound reports whether a statement can be wrapped in SELECT * FROM (...)
+// LIMIT n+1 for row bounding. SELECT/WITH can; SHOW/DESCRIBE/EXPLAIN/EXISTS and
+// everything else cannot be wrapped and run as-is under the cap ceiling. This is
+// a bounding decision, not an authorization one — ClickHouse's per-user
+// privileges are the boundary (ADR-0006).
+func CanBound(sql string) bool {
+	switch leadingKeyword(sql) {
 	case "SELECT", "WITH":
-		return ClassSelect
-	case "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "EXISTS":
-		return ClassSmall
-	default:
-		return ClassRejected
-	}
-}
-
-// HasUnsupportedOutputClause reports whether the query ends with a FORMAT or
-// INTO OUTFILE clause, which redirect output away from the structured rows this
-// tool returns. Caught early for a clear message instead of a confusing wrapped-
-// subquery syntax error.
-//
-// Both are terminal clauses, so it matches only "FORMAT <name>" or "INTO OUTFILE"
-// as the tail of the (semicolon-trimmed) statement. This avoids false positives
-// on a column named `format`, `formatDateTime(...)`, or a mid-query token, at the
-// cost of not catching the (invalid) case where they appear mid-statement — which
-// ClickHouse rejects anyway.
-func HasUnsupportedOutputClause(sql string) bool {
-	// Strip -- line comments first so a trailing "-- FORMAT JSON" comment is not
-	// mistaken for an actual output clause. (String literals are not tokenized;
-	// a `--` inside a literal is rare and the fallout is only a spurious reject.)
-	upper := strings.ToUpper(strings.TrimRight(strings.TrimSpace(stripLineComments(sql)), "; "))
-	if strings.HasSuffix(upper, "INTO OUTFILE") || strings.Contains(upper, "INTO OUTFILE ") {
 		return true
-	}
-	// FORMAT <name> as the final clause: find the last FORMAT that is a whole
-	// word and is followed only by a single identifier (the format name).
-	idx := strings.LastIndex(upper, "FORMAT ")
-	if idx < 0 {
+	default:
 		return false
 	}
-	if idx > 0 && isIdentByte(upper[idx-1]) {
-		return false // part of a longer identifier, e.g. formatDateTime
-	}
-	tail := strings.TrimSpace(upper[idx+len("FORMAT "):])
-	return tail != "" && isIdentifier(tail)
-}
-
-// ContainsMultipleStatements reports whether sql holds more than one statement,
-// i.e. a semicolon with real content after it. A single trailing ';' does not
-// count. Checked before Bound wraps the query, so a second statement is rejected
-// with a clear message instead of surfacing a syntax error against the injected
-// "SELECT * FROM (...) LIMIT n" wrapper — which leaks tool internals to the caller.
-//
-// Semicolons inside string/identifier literals and comments do not separate
-// statements, so they are skipped. This is a scanner, not a full parser: it
-// tracks quote and comment state, which is enough to place the real separators.
-func ContainsMultipleStatements(sql string) bool {
-	const (
-		normal = iota
-		inSingle
-		inDouble
-		inBacktick
-		inLine
-		inBlock
-	)
-	state := normal
-	for i := 0; i < len(sql); i++ {
-		c := sql[i]
-		switch state {
-		case normal:
-			switch {
-			case c == '\'':
-				state = inSingle
-			case c == '"':
-				state = inDouble
-			case c == '`':
-				state = inBacktick
-			case c == '-' && i+1 < len(sql) && sql[i+1] == '-':
-				state = inLine
-				i++
-			case c == '/' && i+1 < len(sql) && sql[i+1] == '*':
-				state = inBlock
-				i++
-			case c == ';':
-				// A separator only if anything but whitespace follows.
-				if strings.TrimSpace(sql[i+1:]) != "" {
-					return true
-				}
-			}
-		case inSingle:
-			switch c {
-			case '\\':
-				i++ // skip an escaped char inside the literal
-			case '\'':
-				state = normal
-			}
-		case inDouble:
-			switch c {
-			case '\\':
-				i++
-			case '"':
-				state = normal
-			}
-		case inBacktick:
-			if c == '`' {
-				state = normal
-			}
-		case inLine:
-			if c == '\n' {
-				state = normal
-			}
-		case inBlock:
-			if c == '*' && i+1 < len(sql) && sql[i+1] == '/' {
-				state = normal
-				i++
-			}
-		}
-	}
-	return false
-}
-
-func stripLineComments(sql string) string {
-	lines := strings.Split(sql, "\n")
-	for i, line := range lines {
-		if j := strings.Index(line, "--"); j >= 0 {
-			lines[i] = line[:j]
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func isIdentifier(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if !isIdentByte(s[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func isIdentByte(b byte) bool {
-	return b == '_' || (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 // leadingKeyword returns the upper-cased first token, skipping leading
@@ -191,20 +49,18 @@ func leadingKeyword(sql string) string {
 	return strings.ToUpper(s[:i])
 }
 
-// Bound wraps SELECT/WITH to cap the row count; small statements pass through
+// Bound wraps a boundable statement to cap the row count; others pass through
 // (the throw-mode cap is their backstop).
 //
 // The newline before the closing paren is load-bearing: if the inner query ends
 // in a trailing "-- comment", putting ") LIMIT n" on its own line stops the
 // comment from swallowing it (which would leave an unmatched paren).
-func Bound(sql string, class StmtClass, fetchLimit int) string {
-	switch class {
-	case ClassSelect:
-		inner := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(sql), "; "))
-		return "SELECT * FROM (" + inner + "\n) LIMIT " + strconv.Itoa(fetchLimit)
-	default:
+func Bound(sql string, canBound bool, fetchLimit int) string {
+	if !canBound {
 		return sql
 	}
+	inner := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(sql), "; "))
+	return "SELECT * FROM (" + inner + "\n) LIMIT " + strconv.Itoa(fetchLimit)
 }
 
 // Truncation is embedded by every list-shaped tool's output so they share one

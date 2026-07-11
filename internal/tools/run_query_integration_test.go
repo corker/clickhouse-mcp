@@ -81,21 +81,6 @@ func TestRunQuery_ColumnTypes(t *testing.T) {
 	}
 }
 
-func TestRunQuery_RejectsMultipleStatements(t *testing.T) {
-	conn := testsupport.Start(t)
-	_, _, err := runQuery(context.Background(), conn, runQueryArgs{SQL: "SELECT 1; SELECT 2"})
-	if err == nil {
-		t.Fatal("two statements should be rejected")
-	}
-	// The message must be the clean tool error, never a leaked wrapper syntax error.
-	if !strings.Contains(err.Error(), "one statement") {
-		t.Errorf("want a clear 'one statement' message, got: %v", err)
-	}
-	if strings.Contains(err.Error(), "LIMIT") {
-		t.Errorf("error must not leak the injected LIMIT wrapper: %v", err)
-	}
-}
-
 func TestRunQuery_ArrayOfBigInts(t *testing.T) {
 	conn := testsupport.Start(t)
 	// Array(UInt64) elements must be strings, not lossy JSON numbers — the LSP fix.
@@ -150,32 +135,14 @@ func TestRunQuery_SmallStatements(t *testing.T) {
 	}
 }
 
-func TestRunQuery_RejectsWrites(t *testing.T) {
+// run_query no longer rejects writes itself (ADR-0006 — ClickHouse authorizes).
+// A write sent to run_query is not a row-returning statement, so the driver's
+// Query path errors rather than performing it; writes belong on run_statement.
+func TestRunQuery_WriteOnQueryPathErrors(t *testing.T) {
 	conn := testsupport.Start(t)
 	ctx := context.Background()
-	for _, sql := range []string{"INSERT INTO t VALUES (1)", "DROP TABLE t", "CREATE TABLE t (x UInt8) ENGINE=Memory"} {
-		if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: sql}); err == nil {
-			t.Errorf("%q should be rejected by the allowlist", sql)
-		}
-	}
-}
-
-func TestRunQuery_RejectsOutputClauses(t *testing.T) {
-	conn := testsupport.Start(t)
-	ctx := context.Background()
-	for _, sql := range []string{"SELECT 1 FORMAT JSON", "SELECT 1 INTO OUTFILE '/tmp/x'"} {
-		_, _, err := runQuery(ctx, conn, runQueryArgs{SQL: sql})
-		if err == nil {
-			t.Errorf("%q should be rejected", sql)
-			continue
-		}
-		if !strings.Contains(err.Error(), "not supported") {
-			t.Errorf("%q: want clean 'not supported' msg, got: %v", sql, err)
-		}
-	}
-	// A column named format must still WORK (not be rejected).
-	if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: "SELECT formatDateTime(now(),'%Y') AS y"}); err != nil {
-		t.Errorf("formatDateTime should work, got: %v", err)
+	if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: "INSERT INTO t VALUES (1)"}); err == nil {
+		t.Error("an INSERT via run_query (the Query path) should error, not silently write")
 	}
 }
 

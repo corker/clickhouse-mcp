@@ -126,10 +126,8 @@ func databaseExists(ctx context.Context, conn driver.Conn, database string) (boo
 // leanTables lists tables ordered by name. fetch caps the rows (0 = unbounded,
 // used for the single-table table= path).
 func leanTables(ctx context.Context, conn driver.Conn, database, table string, fetch int) ([]tableInfo, error) {
-	// Filter the write-probe's sentinel table defensively — WriteProbe drops it,
-	// but this guarantees it never surfaces even if a drop failed.
-	sql := "SELECT name, engine, total_rows, comment FROM system.tables WHERE database = ? AND name != ?"
-	qargs := []any{database, chdriver.ProbeTable}
+	sql := "SELECT name, engine, total_rows, comment FROM system.tables WHERE database = ?"
+	qargs := []any{database}
 	if table != "" {
 		sql += " AND name = ?"
 		qargs = append(qargs, table)

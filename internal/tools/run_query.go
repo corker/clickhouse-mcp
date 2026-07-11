@@ -15,48 +15,40 @@ import (
 const DefaultRowLimit = 100
 
 type runQueryArgs struct {
-	SQL   string `json:"sql" jsonschema:"the read-only SQL to run (SELECT/WITH/SHOW/DESCRIBE/EXPLAIN/EXISTS)"`
+	SQL   string `json:"sql" jsonschema:"a single row-returning SQL statement (SELECT/WITH/SHOW/DESCRIBE/EXPLAIN/EXISTS)"`
 	Limit int    `json:"limit,omitempty" jsonschema:"max rows to return; defaults to 100"`
 }
 
 func RegisterRunQuery(server *mcp.Server, conn driver.Conn) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "run_query",
-		Description: "Run a single read-only ClickHouse query and return typed rows " +
-			"plus each column's type. Only SELECT/WITH/SHOW/DESCRIBE/EXPLAIN/EXISTS " +
-			"are allowed. Large integers and decimals are returned as strings to " +
-			"avoid precision loss; use column_types to tell those from real strings.",
+		Description: "Run a single row-returning ClickHouse query (SELECT/WITH/SHOW/" +
+			"DESCRIBE/EXPLAIN/EXISTS) and return typed rows plus each column's type. " +
+			"Large integers and decimals are returned as strings to avoid precision " +
+			"loss; use column_types to tell those from real strings. Use run_statement " +
+			"for writes and DDL.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args runQueryArgs) (*mcp.CallToolResult, query.Result, error) {
 		return runQuery(ctx, conn, args)
 	})
 }
 
 func runQuery(ctx context.Context, conn driver.Conn, args runQueryArgs) (*mcp.CallToolResult, query.Result, error) {
-	class := query.Classify(args.SQL)
-	if class == query.ClassRejected {
-		return nil, query.Result{}, fmt.Errorf("only read-only queries are allowed (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN, EXISTS)")
-	}
-	if query.HasUnsupportedOutputClause(args.SQL) {
-		return nil, query.Result{}, fmt.Errorf("FORMAT and INTO OUTFILE are not supported; results are returned as structured rows")
-	}
-	if query.ContainsMultipleStatements(args.SQL) {
-		return nil, query.Result{}, fmt.Errorf("only one statement per call is supported; send a single read-only query")
-	}
-
 	limit := args.Limit
 	if limit <= 0 {
 		limit = DefaultRowLimit
 	}
 
-	result, err := execBounded(ctx, conn, args.SQL, class, limit)
+	result, err := execBounded(ctx, conn, args.SQL, limit)
 	return nil, result, err
 }
 
-// execBounded is the reusable guarded path: a caller passes trusted SQL and its
-// already-decided class. SELECT/WITH are wrapped with LIMIT displayLimit+1 to
-// detect truncation; small statements run as-is under the cap backstop.
-func execBounded(ctx context.Context, conn driver.Conn, sql string, class query.StmtClass, displayLimit int) (query.Result, error) {
-	bounded := query.Bound(sql, class, displayLimit+1)
+// execBounded runs a row-returning statement under the cap ceiling. SELECT/WITH
+// are wrapped with LIMIT displayLimit+1 to detect truncation; other statements
+// run as-is (the throw-mode cap is their backstop). Whether the connected user
+// may run the statement is ClickHouse's call — a non-read statement here just
+// returns whatever the driver/server says.
+func execBounded(ctx context.Context, conn driver.Conn, sql string, displayLimit int) (query.Result, error) {
+	bounded := query.Bound(sql, query.CanBound(sql), displayLimit+1)
 
 	qctx := chdriver.DefaultReadContext(ctx)
 

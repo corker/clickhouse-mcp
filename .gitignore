@@ -17,3 +17,4 @@ coverage.txt
 # Local overrides
 .env
 .env.local
+bin/

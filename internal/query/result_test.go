@@ -5,73 +5,45 @@ import (
 	"testing"
 )
 
-func TestClassify(t *testing.T) {
-	tests := []struct {
-		sql  string
-		want StmtClass
-	}{
-		{"SELECT 1", ClassSelect},
-		{"  select 1", ClassSelect},
-		{"WITH x AS (SELECT 1) SELECT * FROM x", ClassSelect},
-		{"SHOW DATABASES", ClassSmall},
-		{"DESCRIBE t", ClassSmall},
-		{"DESC t", ClassSmall},
-		{"EXPLAIN SELECT 1", ClassSmall},
-		{"EXISTS TABLE t", ClassSmall},
-		{"-- a comment\nSELECT 1", ClassSelect},
-		{"/* c */ SHOW TABLES", ClassSmall},
-		{"INSERT INTO t VALUES (1)", ClassRejected},
-		{"DROP TABLE t", ClassRejected},
-		{"", ClassRejected},
-	}
-	for _, tt := range tests {
-		if got := Classify(tt.sql); got != tt.want {
-			t.Errorf("Classify(%q) = %v, want %v", tt.sql, got, tt.want)
-		}
-	}
-}
-
-func TestHasUnsupportedOutputClause(t *testing.T) {
+func TestCanBound(t *testing.T) {
 	tests := []struct {
 		sql  string
 		want bool
 	}{
-		{"SELECT 1 FORMAT JSON", true},
-		{"SELECT 1 format json", true},
-		{"SELECT 1 FORMAT JSON;", true}, // trailing semicolon
-		{"SELECT 1 INTO OUTFILE '/tmp/x'", true},
-		{"SELECT 1 into outfile '/x'", true},
-		{"SELECT 1", false},
-		{"SELECT format FROM t", false},                  // column named format (FROM follows, not an ident tail)
-		{"SELECT formatDateTime(x) FROM t", false},       // function prefixed with format
-		{"SELECT 'FORMAT' AS s", false},                  // FORMAT inside a literal, mid-query
-		{"SELECT 1 -- FORMAT JSON", false},               // FORMAT in a trailing line comment
-		{"SELECT 1 -- trailing note\nFORMAT JSON", true}, // real clause after a comment line
-		{"SELECT number FROM system.numbers", false},
+		{"SELECT 1", true},
+		{"  select 1", true},
+		{"WITH x AS (SELECT 1) SELECT * FROM x", true},
+		{"-- a comment\nSELECT 1", true},
+		{"SHOW DATABASES", false},
+		{"DESCRIBE t", false},
+		{"EXPLAIN SELECT 1", false},
+		{"EXISTS TABLE t", false},
+		{"INSERT INTO t VALUES (1)", false},
+		{"", false},
 	}
 	for _, tt := range tests {
-		if got := HasUnsupportedOutputClause(tt.sql); got != tt.want {
-			t.Errorf("HasUnsupportedOutputClause(%q) = %v, want %v", tt.sql, got, tt.want)
+		if got := CanBound(tt.sql); got != tt.want {
+			t.Errorf("CanBound(%q) = %v, want %v", tt.sql, got, tt.want)
 		}
 	}
 }
 
 func TestBound(t *testing.T) {
 	tests := []struct {
-		name  string
-		sql   string
-		class StmtClass
-		want  string
+		name     string
+		sql      string
+		canBound bool
+		want     string
 	}{
-		{"select wraps", "SELECT n FROM t", ClassSelect, "SELECT * FROM (SELECT n FROM t\n) LIMIT 6"},
-		{"select strips trailing semicolon", "SELECT 1;", ClassSelect, "SELECT * FROM (SELECT 1\n) LIMIT 6"},
-		{"select strips trailing space+semicolon", "SELECT 1 ; ", ClassSelect, "SELECT * FROM (SELECT 1\n) LIMIT 6"},
-		{"trailing line comment: paren on own line", "SELECT 1 -- c", ClassSelect, "SELECT * FROM (SELECT 1 -- c\n) LIMIT 6"},
-		{"small unchanged", "SHOW DATABASES", ClassSmall, "SHOW DATABASES"},
-		{"describe unchanged", "DESCRIBE t", ClassSmall, "DESCRIBE t"},
+		{"boundable wraps", "SELECT n FROM t", true, "SELECT * FROM (SELECT n FROM t\n) LIMIT 6"},
+		{"strips trailing semicolon", "SELECT 1;", true, "SELECT * FROM (SELECT 1\n) LIMIT 6"},
+		{"strips trailing space+semicolon", "SELECT 1 ; ", true, "SELECT * FROM (SELECT 1\n) LIMIT 6"},
+		{"trailing line comment: paren on own line", "SELECT 1 -- c", true, "SELECT * FROM (SELECT 1 -- c\n) LIMIT 6"},
+		{"non-boundable unchanged", "SHOW DATABASES", false, "SHOW DATABASES"},
+		{"describe unchanged", "DESCRIBE t", false, "DESCRIBE t"},
 	}
 	for _, tt := range tests {
-		if got := Bound(tt.sql, tt.class, 6); got != tt.want {
+		if got := Bound(tt.sql, tt.canBound, 6); got != tt.want {
 			t.Errorf("Bound(%q) = %q, want %q", tt.sql, got, tt.want)
 		}
 	}
@@ -131,30 +103,6 @@ func TestShape(t *testing.T) {
 			t.Errorf("expected a truncation note")
 		}
 	})
-}
-
-func TestContainsMultipleStatements(t *testing.T) {
-	tests := []struct {
-		sql  string
-		want bool
-	}{
-		{"SELECT 1", false},
-		{"SELECT 1;", false},                          // trailing terminator only
-		{"SELECT 1;  \n ", false},                     // trailing terminator + whitespace
-		{"SELECT 1; SELECT 2", true},                  // two statements
-		{"SELECT 1;SELECT 2;", true},                  // two statements, both terminated
-		{"SELECT ';' AS s", false},                    // semicolon inside a string literal
-		{"SELECT 1 -- ; not a separator", false},      // semicolon in a line comment
-		{"SELECT 1 /* ; still safe */ FROM t", false}, // semicolon in a block comment
-		{"SELECT `a;b` FROM t", false},                // semicolon in a backtick identifier
-		{"SELECT 'a'; DROP TABLE t", true},            // real separator after a literal closes
-		{"SELECT '\\';' AS s", false},                 // escaped quote keeps the literal open
-	}
-	for _, tt := range tests {
-		if got := ContainsMultipleStatements(tt.sql); got != tt.want {
-			t.Errorf("ContainsMultipleStatements(%q) = %v, want %v", tt.sql, got, tt.want)
-		}
-	}
 }
 
 func TestHasTopLevelOrderBy(t *testing.T) {

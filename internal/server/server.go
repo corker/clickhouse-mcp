@@ -2,40 +2,21 @@
 package server
 
 import (
-	"context"
-	"log"
-
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	chdriver "github.com/corker/clickhouse-mcp/internal/clickhouse"
-	"github.com/corker/clickhouse-mcp/internal/config"
 	"github.com/corker/clickhouse-mcp/internal/tools"
 )
 
-// New takes cfg so gating future tools on config (e.g. the write path via
-// AllowWriteAccess) is a new branch here, not a signature change.
-func New(ctx context.Context, name string, cfg *config.Config, conn driver.Conn) *mcp.Server {
+// New registers every tool unconditionally. What the caller may actually run is
+// enforced by ClickHouse against the connected user's privileges (ADR-0006), so
+// the server does not gate tools by configuration.
+func New(name string, conn driver.Conn) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: name}, nil)
 	tools.RegisterPing(s, conn)
 	tools.RegisterListDatabases(s, conn)
 	tools.RegisterListTables(s, conn)
-
-	guardHolds, err := chdriver.WriteProbe(ctx, conn, cfg.Database)
-	switch {
-	case err != nil:
-		log.Printf("write-probe failed to run (%v); withholding run_query", err)
-	case !guardHolds:
-		log.Printf("write-probe: writes are NOT refused under readonly=2; withholding run_query. " +
-			"Point the server at a read-only ClickHouse user, or check for a proxy stripping settings.")
-	default:
-		tools.RegisterRunQuery(s, conn)
-	}
-
-	// TODO(write-path): when write tools land, register them here gated on
-	// cfg.AllowWriteAccess. The flag is plumbed through now so that becomes a
-	// single added branch rather than a signature change.
-	_ = cfg.AllowWriteAccess
-
+	tools.RegisterRunQuery(s, conn)
+	tools.RegisterRunStatement(s, conn)
 	return s
 }
