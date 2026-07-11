@@ -27,7 +27,9 @@ No `pkg/`. This is a binary, not a library.
 ## Branching & merging
 
 - **Never commit to `main` directly.** `main` is protected by a GitHub ruleset (`protect-main`):
-  PR required, squash-only merge, no force-push, no deletion.
+  PR required, squash-only merge, no force-push, no deletion, and **CI must pass** — the
+  `lint`, `test (1.25)`, and `test (1.26)` checks are required and the branch must be up to date,
+  so a PR cannot merge while CI is red.
 - Every change goes on a feature branch → PR → **squash merge** into `main`. One PR = one
   squashed commit on `main`.
 - Repo is configured squash-only (merge-commit and rebase-merge are disabled); merged branches
