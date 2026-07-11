@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/corker/clickhouse-mcp/internal/clickhouse/testsupport"
@@ -44,5 +45,18 @@ func TestRunStatement_ServerRejectsBadSQL(t *testing.T) {
 		SQL: "INSERT INTO " + db + ".does_not_exist VALUES (1)",
 	}); err == nil {
 		t.Error("insert into a missing table should return the server error")
+	}
+}
+
+// A row-returning statement sent to run_statement must be rejected, not silently
+// executed and discarded (Exec runs a SELECT with no error and no rows, so the
+// caller's query result would vanish with a false "0 rows written" success).
+func TestRunStatement_RejectsRowReturning(t *testing.T) {
+	conn := testsupport.Start(t)
+	ctx := context.Background()
+	for _, sql := range []string{"SELECT 1", "SHOW DATABASES", "DESCRIBE system.numbers"} {
+		if _, _, err := runStatement(ctx, conn, runStatementArgs{SQL: sql}); err == nil || !strings.Contains(err.Error(), "run_query") {
+			t.Errorf("%q: want rejection pointing to run_query, got: %v", sql, err)
+		}
 	}
 }

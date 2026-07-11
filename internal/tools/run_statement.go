@@ -8,6 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	chdriver "github.com/corker/clickhouse-mcp/internal/clickhouse"
+	"github.com/corker/clickhouse-mcp/internal/query"
 )
 
 type runStatementArgs struct {
@@ -32,6 +33,9 @@ func RegisterRunStatement(server *mcp.Server, conn driver.Conn) {
 }
 
 func runStatement(ctx context.Context, conn driver.Conn, args runStatementArgs) (*mcp.CallToolResult, runStatementOutput, error) {
+	if query.IsRowReturning(args.SQL) {
+		return nil, runStatementOutput{}, fmt.Errorf("run_statement is for statements that do not return rows; use run_query for SELECT/WITH/SHOW/DESCRIBE/EXPLAIN/EXISTS")
+	}
 	wrote, err := chdriver.ExecWritten(ctx, conn, args.SQL)
 	if err != nil {
 		return nil, runStatementOutput{}, fmt.Errorf("statement failed: %w", err)
