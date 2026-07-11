@@ -13,16 +13,15 @@ import (
 	"github.com/corker/clickhouse-mcp/internal/tools"
 )
 
-// New runs the write-probe: run_query is served only when the guard is verified
-// to hold (fail-closed); ping is always served. cfg is threaded in so future
-// tools can be gated on configuration (e.g. the write path via AllowWriteAccess).
+// New takes cfg so gating future tools on config (e.g. the write path via
+// AllowWriteAccess) is a new branch here, not a signature change.
 func New(ctx context.Context, name string, cfg *config.Config, conn driver.Conn) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: name}, nil)
 	tools.RegisterPing(s, conn)
 	tools.RegisterListDatabases(s, conn)
 	tools.RegisterListTables(s, conn)
 
-	guardHolds, err := chdriver.WriteProbe(ctx, conn)
+	guardHolds, err := chdriver.WriteProbe(ctx, conn, cfg.Database)
 	switch {
 	case err != nil:
 		log.Printf("write-probe failed to run (%v); withholding run_query", err)

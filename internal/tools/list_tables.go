@@ -8,6 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	chdriver "github.com/corker/clickhouse-mcp/internal/clickhouse"
+	"github.com/corker/clickhouse-mcp/internal/query"
 )
 
 // Caps that keep a large database from flooding the caller's context. The folded
@@ -43,11 +44,9 @@ type column struct {
 }
 
 type listTablesOutput struct {
-	Database  string      `json:"database"`
-	Tables    []tableInfo `json:"tables"`
-	Truncated bool        `json:"truncated" jsonschema:"true if the database has more tables than were returned"`
-	Limit     int         `json:"limit" jsonschema:"the applied table limit"`
-	Note      string      `json:"note,omitempty" jsonschema:"guidance when the list was truncated"`
+	Database         string      `json:"database"`
+	Tables           []tableInfo `json:"tables"`
+	query.Truncation             // count/truncated/limit/note
 }
 
 func RegisterListTables(server *mcp.Server, conn driver.Conn) {
@@ -96,9 +95,11 @@ func listTables(ctx context.Context, conn driver.Conn, args listTablesArgs) (*mc
 		}
 	}
 
-	out := listTablesOutput{Database: args.Database, Limit: limit}
+	var tr query.Truncation
 	if args.Table == "" {
-		tables, out.Truncated, out.Note = truncate(tables, limit, "tables")
+		tables, tr = truncate(tables, limit, "tables")
+	} else {
+		tr = query.Truncation{Count: len(tables), Limit: limit}
 	}
 
 	if args.Table != "" || args.Columns {
@@ -111,8 +112,7 @@ func listTables(ctx context.Context, conn driver.Conn, args listTablesArgs) (*mc
 			tables[i].ColumnsTruncated = truncated
 		}
 	}
-	out.Tables = tables
-	return nil, out, nil
+	return nil, listTablesOutput{Database: args.Database, Tables: tables, Truncation: tr}, nil
 }
 
 func databaseExists(ctx context.Context, conn driver.Conn, database string) (bool, error) {

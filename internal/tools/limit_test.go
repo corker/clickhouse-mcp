@@ -41,49 +41,49 @@ func TestResolveLimit(t *testing.T) {
 func TestTruncate(t *testing.T) {
 	items := []int{1, 2, 3, 4, 5, 6}
 
-	t.Run("under limit: not truncated, no note", func(t *testing.T) {
-		kept, tr, note := truncate(items[:3], 5, "tables")
-		if tr || len(kept) != 3 || note != "" {
-			t.Fatalf("got kept=%d truncated=%v note=%q", len(kept), tr, note)
+	t.Run("under limit: not truncated, count set, no note", func(t *testing.T) {
+		kept, tr := truncate(items[:3], 5, "tables")
+		if tr.Truncated || len(kept) != 3 || tr.Count != 3 || tr.Limit != 5 || tr.Note != "" {
+			t.Fatalf("got %+v (kept=%d)", tr, len(kept))
 		}
 	})
 
 	t.Run("exactly at limit: not truncated (the off-by-one boundary)", func(t *testing.T) {
-		kept, tr, note := truncate(items[:5], 5, "tables")
-		if tr || len(kept) != 5 || note != "" {
-			t.Fatalf("5 items at limit 5 must not truncate: kept=%d truncated=%v note=%q", len(kept), tr, note)
+		kept, tr := truncate(items[:5], 5, "tables")
+		if tr.Truncated || len(kept) != 5 || tr.Count != 5 || tr.Note != "" {
+			t.Fatalf("5 items at limit 5 must not truncate: %+v (kept=%d)", tr, len(kept))
 		}
 	})
 
 	t.Run("limit+1: truncated, sentinel dropped, note has count+noun", func(t *testing.T) {
-		kept, tr, note := truncate(items, 5, "tables") // 6 items, limit 5
-		if !tr || len(kept) != 5 {
-			t.Fatalf("6 items at limit 5 must truncate to 5: kept=%d truncated=%v", len(kept), tr)
+		kept, tr := truncate(items, 5, "tables") // 6 items, limit 5
+		if !tr.Truncated || len(kept) != 5 || tr.Count != 5 {
+			t.Fatalf("6 items at limit 5 must truncate to 5: %+v (kept=%d)", tr, len(kept))
 		}
-		if !strings.Contains(note, "5") || !strings.Contains(note, "tables") {
-			t.Errorf("note should mention the count and noun, got %q", note)
+		if !strings.Contains(tr.Note, "5") || !strings.Contains(tr.Note, "tables") {
+			t.Errorf("note should mention the count and noun, got %q", tr.Note)
 		}
 	})
 
-	t.Run("empty slice: not truncated", func(t *testing.T) {
-		kept, tr, note := truncate([]int{}, 5, "tables")
-		if tr || len(kept) != 0 || note != "" {
-			t.Fatalf("empty input must not truncate: kept=%d truncated=%v note=%q", len(kept), tr, note)
+	t.Run("empty slice: not truncated, count 0", func(t *testing.T) {
+		kept, tr := truncate([]int{}, 5, "tables")
+		if tr.Truncated || len(kept) != 0 || tr.Count != 0 || tr.Note != "" {
+			t.Fatalf("empty input must not truncate: %+v (kept=%d)", tr, len(kept))
 		}
 	})
 
 	// A non-positive limit is treated as no-cap, not "slice to 0 / panic".
 	t.Run("limit=0: no cap, not truncated", func(t *testing.T) {
-		kept, tr, note := truncate(items, 0, "tables")
-		if tr || len(kept) != len(items) || note != "" {
-			t.Fatalf("limit 0 must return everything uncapped: kept=%d truncated=%v note=%q", len(kept), tr, note)
+		kept, tr := truncate(items, 0, "tables")
+		if tr.Truncated || len(kept) != len(items) || tr.Note != "" {
+			t.Fatalf("limit 0 must return everything uncapped: %+v (kept=%d)", tr, len(kept))
 		}
 	})
 
 	t.Run("negative limit: no cap, no panic", func(t *testing.T) {
-		kept, tr, _ := truncate(items, -1, "tables")
-		if tr || len(kept) != len(items) {
-			t.Fatalf("negative limit must return everything, not panic: kept=%d truncated=%v", len(kept), tr)
+		kept, tr := truncate(items, -1, "tables")
+		if tr.Truncated || len(kept) != len(items) {
+			t.Fatalf("negative limit must return everything, not panic: %+v (kept=%d)", tr, len(kept))
 		}
 	})
 }

@@ -1,6 +1,10 @@
 package tools
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/corker/clickhouse-mcp/internal/query"
+)
 
 // resolveTableLimit tiers the default: folding every table's columns
 // (include_columns) uses a much tighter default than a lean listing, since each
@@ -22,18 +26,22 @@ func resolveLimit(argLimit, def int) int {
 	return def
 }
 
-// truncate caps items to limit, reporting whether more existed. items is expected
-// to hold up to limit+1 (the sentinel used to detect overflow). The note is
-// non-empty only when truncated, and mentions the count so the caller can act.
+// truncate caps items to limit. items is expected to hold up to limit+1 (the
+// sentinel used to detect overflow).
 //
 // A non-positive limit is treated as "no cap" (return items unchanged): callers
 // pass resolved defaults (always positive), so 0/negative only reaches here by
 // mistake, and returning everything is safer than slicing to an empty list with
 // a nonsensical "showing 0 ... more exist" note (or panicking on a negative bound).
-func truncate[T any](items []T, limit int, noun string) (kept []T, truncated bool, note string) {
+func truncate[T any](items []T, limit int, noun string) (kept []T, tr query.Truncation) {
 	if limit <= 0 || len(items) <= limit {
-		return items, false, ""
+		return items, query.Truncation{Count: len(items), Limit: limit}
 	}
-	return items[:limit], true, fmt.Sprintf(
-		"showing %d %s; more exist. Pass a larger limit to see the rest.", limit, noun)
+	kept = items[:limit]
+	return kept, query.Truncation{
+		Count:     len(kept),
+		Truncated: true,
+		Limit:     limit,
+		Note:      fmt.Sprintf("showing %d %s; more exist. Pass a larger limit to see the rest.", limit, noun),
+	}
 }
