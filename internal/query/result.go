@@ -5,6 +5,14 @@ import (
 	"strings"
 )
 
+// IsBlank reports whether sql is empty or only whitespace/comments — nothing to
+// run. Both tools reject it up front with a clear message instead of forwarding
+// it (run_query would misroute it to run_statement, and run_statement would hand
+// back ClickHouse's bare "Empty query").
+func IsBlank(sql string) bool {
+	return leadingKeyword(sql) == ""
+}
+
 // IsRowReturning reports whether a statement produces rows, i.e. belongs on
 // run_query rather than run_statement. This is a routing decision, not an
 // authorization one — ClickHouse's per-user privileges are the boundary

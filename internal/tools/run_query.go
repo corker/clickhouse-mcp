@@ -33,6 +33,9 @@ func RegisterRunQuery(server *mcp.Server, conn driver.Conn) {
 }
 
 func runQuery(ctx context.Context, conn driver.Conn, args runQueryArgs) (*mcp.CallToolResult, query.Result, error) {
+	if query.IsBlank(args.SQL) {
+		return nil, query.Result{}, fmt.Errorf("provide a SQL statement to run")
+	}
 	if query.ContainsMultipleStatements(args.SQL) {
 		return nil, query.Result{}, fmt.Errorf("send one statement per call; multiple statements separated by ';' are not supported")
 	}

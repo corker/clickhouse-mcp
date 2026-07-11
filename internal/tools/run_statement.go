@@ -33,6 +33,9 @@ func RegisterRunStatement(server *mcp.Server, conn driver.Conn) {
 }
 
 func runStatement(ctx context.Context, conn driver.Conn, args runStatementArgs) (*mcp.CallToolResult, runStatementOutput, error) {
+	if query.IsBlank(args.SQL) {
+		return nil, runStatementOutput{}, fmt.Errorf("provide a SQL statement to run")
+	}
 	// Reject before Exec: clickhouse-go runs only the first statement of a
 	// multi-statement write and silently drops the rest (verified; ClickHouse #66931).
 	if query.ContainsMultipleStatements(args.SQL) {

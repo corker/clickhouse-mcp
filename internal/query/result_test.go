@@ -28,6 +28,28 @@ func TestCanBound(t *testing.T) {
 	}
 }
 
+func TestIsBlank(t *testing.T) {
+	tests := []struct {
+		sql  string
+		want bool
+	}{
+		{"", true},
+		{"   ", true},
+		{"\t\n ", true},
+		{"-- just a comment", true},
+		{"/* block */", true},
+		{"-- c1\n-- c2", true},
+		{"SELECT 1", false},
+		{"  select 1", false},
+		{"(SELECT 1)", false},
+	}
+	for _, tt := range tests {
+		if got := IsBlank(tt.sql); got != tt.want {
+			t.Errorf("IsBlank(%q) = %v, want %v", tt.sql, got, tt.want)
+		}
+	}
+}
+
 func TestIsRowReturning(t *testing.T) {
 	tests := []struct {
 		sql  string

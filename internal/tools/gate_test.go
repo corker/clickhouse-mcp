@@ -15,7 +15,6 @@ func TestRunQuery_RejectsNonRowReturning(t *testing.T) {
 		{"insert", "INSERT INTO t VALUES (1)"},
 		{"create", "CREATE TABLE t (x UInt8) ENGINE=Memory"},
 		{"drop", "DROP TABLE t"},
-		{"empty", ""},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -24,6 +23,19 @@ func TestRunQuery_RejectsNonRowReturning(t *testing.T) {
 				t.Errorf("want rejection pointing to run_statement, got: %v", err)
 			}
 		})
+	}
+}
+
+// Blank input is rejected up front by both tools — before the row-returning
+// routing (so it is not misrouted) and before conn (nil here).
+func TestBothTools_RejectBlank(t *testing.T) {
+	for _, sql := range []string{"", "   ", "-- only a comment"} {
+		if _, _, err := runQuery(context.Background(), nil, runQueryArgs{SQL: sql}); err == nil || !strings.Contains(err.Error(), "provide a SQL statement") {
+			t.Errorf("run_query(%q) want blank rejection, got: %v", sql, err)
+		}
+		if _, _, err := runStatement(context.Background(), nil, runStatementArgs{SQL: sql}); err == nil || !strings.Contains(err.Error(), "provide a SQL statement") {
+			t.Errorf("run_statement(%q) want blank rejection, got: %v", sql, err)
+		}
 	}
 }
 
