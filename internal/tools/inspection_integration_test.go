@@ -226,6 +226,39 @@ func TestListTables_IncludeColumns(t *testing.T) {
 	}
 }
 
+// The per-table column cap must fire on the include_columns fold path too, not
+// only via table= — the two paths share tableColumns, and this pins that the
+// folded loop sets ColumnsTruncated per table.
+func TestListTables_IncludeColumns_ColumnCap(t *testing.T) {
+	conn := testsupport.Start(t)
+	ctx := context.Background()
+
+	var b strings.Builder
+	for i := 0; i < MaxColumnsPerTable+50; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "c%d UInt8", i)
+	}
+	if err := conn.Exec(ctx, "CREATE TABLE default.wide ("+b.String()+") ENGINE=Memory"); err != nil {
+		t.Fatalf("seed wide: %v", err)
+	}
+	_, out, err := listTables(ctx, conn, listTablesArgs{Database: "default", Columns: true})
+	if err != nil {
+		t.Fatalf("include_columns: %v", err)
+	}
+	var wide *tableInfo
+	for i := range out.Tables {
+		if out.Tables[i].Name == "wide" {
+			wide = &out.Tables[i]
+		}
+	}
+	if wide == nil || len(wide.Columns) != MaxColumnsPerTable || !wide.ColumnsTruncated {
+		t.Errorf("wide table via include_columns should cap at %d with ColumnsTruncated, got %+v",
+			MaxColumnsPerTable, wide)
+	}
+}
+
 // include_columns uses a tighter default limit than a lean listing (folding every
 // column of every table is a bigger payload), so a large database truncates
 // rather than dumping every column. An explicit limit still overrides.

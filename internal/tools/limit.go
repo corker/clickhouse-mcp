@@ -28,8 +28,13 @@ func resolveLimit(argLimit, def int) int {
 // truncate caps items to limit, reporting whether more existed. items is expected
 // to hold up to limit+1 (the sentinel used to detect overflow). The note is
 // non-empty only when truncated, and mentions the count so the caller can act.
+//
+// A non-positive limit is treated as "no cap" (return items unchanged): callers
+// pass resolved defaults (always positive), so 0/negative only reaches here by
+// mistake, and returning everything is safer than slicing to an empty list with
+// a nonsensical "showing 0 ... more exist" note (or panicking on a negative bound).
 func truncate[T any](items []T, limit int, noun string) (kept []T, truncated bool, note string) {
-	if len(items) <= limit {
+	if limit <= 0 || len(items) <= limit {
 		return items, false, ""
 	}
 	return items[:limit], true, fmt.Sprintf(
