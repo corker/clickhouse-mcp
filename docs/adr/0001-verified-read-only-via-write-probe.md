@@ -1,14 +1,28 @@
 # Verified read-only via startup write-probe, fail-closed
 
-**Status:** accepted
+**Status:** accepted (amended 2026-07-11 after runtime verification)
 
-`run_query` must be read-only, and must *also* inject row/byte caps. We enforce read-only
+`run_query` must be read-only, and must *also* apply row/byte caps. We enforce read-only
 with ClickHouse's `readonly=2` server setting (not Go SQL parsing) and we *verify* it with a
-one-time startup **write-probe** (`CREATE TEMPORARY TABLE`): if a harmless write is refused, the
-guard holds and we serve `run_query`; if the write succeeds and write access wasn't requested, we
-**fail closed** — withhold `run_query` while still serving the inspection tools — and log which
-layer to fix. A Go allowlist runs in front as a fast, friendly rejection and as the point where
-caps are injected, but it is never the security boundary.
+one-time startup **write-probe**: if a harmless write is refused, the guard holds and we serve
+`run_query`; if the write succeeds and write access wasn't requested, we **fail closed** —
+withhold `run_query` while still serving the inspection tools — and log which layer to fix. A Go
+allowlist runs in front as a fast, friendly rejection, but it is never the security boundary.
+
+## Verified behavior (2026-07-11, ClickHouse 26.6.1 + clickhouse-go/v2 v2.47.0)
+
+Runtime probe against a live ClickHouse corrected two assumptions in the original draft:
+
+- **The write-probe must NOT use `CREATE TEMPORARY TABLE`.** `readonly=2` explicitly *exempts*
+  temporary tables — the statement succeeds under readonly, so it would always signal "writes get
+  through" and trip fail-closed permanently. **Probe with `INSERT` into a probe table (or a
+  persistent `CREATE TABLE`)**, which `readonly=2` *does* refuse (error code 164). Confirmed:
+  `readonly=2` set via `clickhouse.Context(WithSettings{"readonly":2})` arrives server-side and
+  blocks `INSERT`/persistent DDL.
+- **Caps are NOT enforced by `result_overflow_mode='break'`** (it is block-granular and lets small
+  results through uncapped). The reliable bound is a tool-injected `LIMIT n+1` for truncation
+  detection, with `throw`-mode `max_result_rows`/`max_result_bytes` as a hard safety ceiling. See
+  ADR-0004.
 
 ## Considered options
 
