@@ -57,11 +57,6 @@ func ToJSONValue(v any) any {
 		return ToJSONValue(x.Any())
 	case chcol.JSON:
 		return ToJSONValue(x.NestedMap())
-	case *chcol.JSON:
-		if x == nil {
-			return nil
-		}
-		return ToJSONValue(x.NestedMap())
 	default:
 		return reflectValue(reflect.ValueOf(v))
 	}
