@@ -10,8 +10,8 @@ import (
 	chdriver "github.com/corker/clickhouse-mcp/internal/clickhouse"
 )
 
-// DefaultDatabaseLimit bounds how many database names are returned, so a server
-// with many databases (e.g. multi-tenant) does not flood the caller's context.
+// DefaultDatabaseLimit keeps a many-database (e.g. multi-tenant) server from
+// flooding the caller's context.
 const DefaultDatabaseLimit = 200
 
 type listDatabasesArgs struct {

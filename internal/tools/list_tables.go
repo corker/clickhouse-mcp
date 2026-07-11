@@ -10,16 +10,13 @@ import (
 	chdriver "github.com/corker/clickhouse-mcp/internal/clickhouse"
 )
 
-// DefaultTableLimit bounds how many tables a lean listing returns, so a large
-// database does not flood the caller's context. DefaultFoldedTableLimit is the
-// tighter default when include_columns folds every table's schema (many columns
-// per table), enforcing the tool's "small databases only" guidance.
+// Caps that keep a large database from flooding the caller's context. The folded
+// default is much tighter than the lean one because include_columns pulls every
+// column of every table ("small databases only").
 const (
 	DefaultTableLimit       = 200
 	DefaultFoldedTableLimit = 20
-	// MaxColumnsPerTable bounds a single table's folded schema, so a very wide
-	// table (hundreds of columns) does not flood the caller's context.
-	MaxColumnsPerTable = 200
+	MaxColumnsPerTable      = 200
 )
 
 type listTablesArgs struct {
@@ -29,9 +26,8 @@ type listTablesArgs struct {
 	Limit    int    `json:"limit,omitempty" jsonschema:"max tables to return; defaults to 200"`
 }
 
-// tableInfo is the lean per-table row. Columns is populated only when the caller
-// asked for schema (via table= or include_columns). RowCount is null for engines
-// that do not track rows (e.g. views).
+// tableInfo is a per-table row. RowCount is null for engines that do not track
+// rows (e.g. views).
 type tableInfo struct {
 	Name             string   `json:"name"`
 	Engine           string   `json:"engine"`
@@ -127,8 +123,8 @@ func databaseExists(ctx context.Context, conn driver.Conn, database string) (boo
 	return n > 0, nil
 }
 
-// leanTables returns the lean per-table rows, ordered by name. fetch caps the
-// number of rows (0 = unbounded, used for the single-table table= path).
+// leanTables lists tables ordered by name. fetch caps the rows (0 = unbounded,
+// used for the single-table table= path).
 func leanTables(ctx context.Context, conn driver.Conn, database, table string, fetch int) ([]tableInfo, error) {
 	// Filter the write-probe's sentinel table defensively — WriteProbe drops it,
 	// but this guarantees it never surfaces even if a drop failed.
@@ -161,8 +157,8 @@ func leanTables(ctx context.Context, conn driver.Conn, database, table string, f
 	return out, rows.Err()
 }
 
-// tableColumns returns a table's columns, capped at MaxColumnsPerTable so a very
-// wide table does not flood the caller. truncated reports whether more exist.
+// tableColumns caps at MaxColumnsPerTable so a very wide table cannot flood the
+// caller; truncated reports whether more exist.
 func tableColumns(ctx context.Context, conn driver.Conn, database, table string) (cols []column, truncated bool, err error) {
 	rows, err := conn.Query(ctx,
 		"SELECT name, type FROM system.columns WHERE database = ? AND table = ? ORDER BY position LIMIT ?",
