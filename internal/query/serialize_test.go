@@ -50,8 +50,12 @@ func TestTypeNameAndElemType(t *testing.T) {
 		{"Array(Date)", "Date"},
 		{"Nullable(Date)", "Date"},
 		{"LowCardinality(Date)", "Date"},
-		{"Array(Array(Date))", "Array(Date)"},      // peels exactly one layer
-		{"Map(String, Date)", "Map(String, Date)"}, // not a single-arg wrapper, unchanged
+		{"Array(Array(Date))", "Array(Date)"},              // peels exactly one layer
+		{"Map(String, Date)", "Map(String, Date)"},         // multi-arg, unchanged
+		{"Tuple(Date, UInt8)", "Tuple(Date, UInt8)"},       // multi-arg, unchanged
+		{"SimpleAggregateFunction(anyLast, Date)", "Date"}, // element is the LAST arg
+		{"SimpleAggregateFunction(sum, UInt64)", "UInt64"}, //
+		{"SomeFutureWrapper(Date)", "Date"},                // open-by-default single-arg unwrap
 		{"Date", "Date"},
 	}
 	for _, c := range elemCases {
@@ -88,6 +92,8 @@ func TestToJSONValue(t *testing.T) {
 		{"nil *big.Int", (*big.Int)(nil), "Int128", nil},
 		{"decimal", decimal.RequireFromString("12345.678"), "Decimal(10, 3)", "12345.678"},
 		{"datetime keeps RFC3339", tm, "DateTime", "2026-07-11T12:00:00Z"},
+		{"date under a wrapper renders date-only", date, "SimpleAggregateFunction(anyLast, Date)", "2026-07-12"},
+		{"datetime under a wrapper keeps time", tm, "SimpleAggregateFunction(anyLast, DateTime)", "2026-07-11T12:00:00Z"},
 		{"date renders date-only", date, "Date", "2026-07-12"},
 		{"date32 renders date-only", date, "Date32", "2026-07-12"},
 		{"array of date renders date-only", []time.Time{date}, "Array(Date)", []any{"2026-07-12"}},

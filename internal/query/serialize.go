@@ -61,6 +61,9 @@ func ToJSONValue(v any, dbType string) any {
 		return x.Format(time.RFC3339Nano)
 	case []byte:
 		// Array(U?Int8) scans to []byte; render as a numeric JSON array, not base64.
+		// NOTE: any new type that is a []byte alias (like net.IP above) must be cased
+		// ABOVE this arm — a type switch matches top-down, so a case added below is
+		// silently shadowed here.
 		out := make([]any, len(x))
 		for i, b := range x {
 			out[i] = int(b)
@@ -82,11 +85,22 @@ func ToJSONValue(v any, dbType string) any {
 	}
 }
 
-// isDateOnly reports whether a ClickHouse type name is a calendar date (no time
-// component). The caller unwraps container types first, so this sees a leaf type.
+// isDateOnly reports whether a ClickHouse type is a calendar date (no time
+// component), unwrapping single-element wrappers so a value scanned directly as
+// time.Time under, e.g., SimpleAggregateFunction(anyLast, Date) or Nullable(Date)
+// is still recognized.
 func isDateOnly(dbType string) bool {
 	t := strings.TrimSpace(dbType)
-	return t == "Date" || t == "Date32"
+	for {
+		if t == "Date" || t == "Date32" {
+			return true
+		}
+		if inner := elemType(t); inner != t {
+			t = strings.TrimSpace(inner)
+			continue
+		}
+		return false
+	}
 }
 
 // typeName returns the outer type constructor of a ClickHouse type ("Array" for
@@ -126,15 +140,30 @@ func splitTopLevel(args string) []string {
 	return out
 }
 
-// elemType strips a single wrapping layer (Array/Nullable/LowCardinality) to the
-// element type; other types (or leaves) are returned unchanged.
+// elemType strips one wrapper to its element type: Array(T)/Nullable(T)/
+// LowCardinality(T) carry a single element T, and SimpleAggregateFunction(fn, T)
+// carries T as its last argument. Multi-argument types the caller handles
+// positionally (Map, Tuple, Variant) and leaves are returned unchanged.
+//
+// Open-by-default on single-arg wrappers so a new CH wrapper unwraps rather than
+// silently mis-threading its type name into recursion (which would, e.g., render
+// a wrapped Date as a datetime).
 func elemType(dbType string) string {
-	switch name, args := typeName(dbType); name {
-	case "Array", "Nullable", "LowCardinality":
-		return args
-	default:
+	name, args := typeName(dbType)
+	switch name {
+	case "", "Map", "Tuple", "Variant":
+		return dbType
+	case "SimpleAggregateFunction":
+		// SimpleAggregateFunction(func, T): the value's type is the last argument.
+		if parts := splitTopLevel(args); len(parts) >= 2 {
+			return parts[len(parts)-1]
+		}
 		return dbType
 	}
+	if inner := splitTopLevel(args); len(inner) == 1 {
+		return inner[0]
+	}
+	return dbType
 }
 
 // fieldType strips an optional "name " prefix from a named-tuple field so only
@@ -142,9 +171,11 @@ func elemType(dbType string) string {
 // followed by a space and a type is treated as a name.
 func fieldType(field string) string {
 	if sp := strings.IndexByte(field, ' '); sp > 0 {
-		// A named field is "<ident> <type>"; an unnamed field like "UInt8" has no
-		// space. Multi-word types (there are none in ClickHouse leaf names) would
-		// break this, but ClickHouse tuple fields are either "name Type" or "Type".
+		// A named field is "<ident> <type>". The first space either follows a bare
+		// field identifier (a real name) or sits inside a type's parens (e.g. the
+		// space in "Decimal(10, 2)" or "Enum8('a' = 1)"). The "(" check distinguishes
+		// them: if text before the first space contains "(", the space is inside a
+		// type, so this is an unnamed field — return it whole.
 		if rest := strings.TrimSpace(field[sp+1:]); rest != "" && !strings.ContainsAny(field[:sp], "(") {
 			return rest
 		}
