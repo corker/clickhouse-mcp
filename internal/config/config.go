@@ -1,3 +1,4 @@
+// Package config loads ClickHouse connection settings from CLICKHOUSE_* env vars.
 package config
 
 import (
@@ -6,6 +7,7 @@ import (
 	"strconv"
 )
 
+// Config holds the ClickHouse connection settings.
 type Config struct {
 	Host     string
 	Port     int
@@ -15,6 +17,7 @@ type Config struct {
 	Secure   bool
 }
 
+// Load reads the CLICKHOUSE_* environment variables, applying defaults.
 func Load() (*Config, error) {
 	port, err := envInt("CLICKHOUSE_PORT", 9000)
 	if err != nil {
