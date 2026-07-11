@@ -125,6 +125,31 @@ func TestListTables_MissingVsEmptyDatabase(t *testing.T) {
 	}
 }
 
+// A database with more tables than the limit is truncated with a signal, so a
+// large database cannot flood the caller's context. table= ignores the limit.
+func TestListTables_Truncation(t *testing.T) {
+	conn := testsupport.Start(t)
+	ctx := context.Background()
+
+	// system has many tables; a low limit must truncate and report it.
+	_, out, err := listTables(ctx, conn, listTablesArgs{Database: "system", Limit: 5})
+	if err != nil {
+		t.Fatalf("list system: %v", err)
+	}
+	if len(out.Tables) != 5 || !out.Truncated || out.Limit != 5 || out.Note == "" {
+		t.Errorf("expected 5 tables truncated with a note, got %d truncated=%v note=%q", len(out.Tables), out.Truncated, out.Note)
+	}
+
+	// table= addresses one table and must ignore the browse limit.
+	if err := conn.Exec(ctx, "CREATE TABLE default.zz (a UInt8, b UInt8) ENGINE=Memory"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, one, err := listTables(ctx, conn, listTablesArgs{Database: "default", Table: "zz", Limit: 1})
+	if err != nil || len(one.Tables) != 1 || one.Truncated || len(one.Tables[0].Columns) != 2 {
+		t.Errorf("table= should ignore limit and return full schema: tables=%d truncated=%v err=%v", len(one.Tables), one.Truncated, err)
+	}
+}
+
 func TestListTables_IncludeColumns(t *testing.T) {
 	conn := testsupport.Start(t)
 	seedInspectionFixture(t, conn)

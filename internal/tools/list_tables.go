@@ -10,10 +10,15 @@ import (
 	chdriver "github.com/corker/clickhouse-mcp/internal/clickhouse"
 )
 
+// DefaultTableLimit bounds how many tables a lean listing returns, so a large
+// database does not flood the caller's context.
+const DefaultTableLimit = 200
+
 type listTablesArgs struct {
 	Database string `json:"database" jsonschema:"the database to list tables from"`
 	Table    string `json:"table,omitempty" jsonschema:"if set, return only this table with its full column schema"`
 	Columns  bool   `json:"include_columns,omitempty" jsonschema:"if true, fold each table's column schema in (use for small databases)"`
+	Limit    int    `json:"limit,omitempty" jsonschema:"max tables to return; defaults to 200"`
 }
 
 // tableInfo is the lean per-table row. Columns is populated only when the caller
@@ -33,8 +38,11 @@ type column struct {
 }
 
 type listTablesOutput struct {
-	Database string      `json:"database"`
-	Tables   []tableInfo `json:"tables"`
+	Database  string      `json:"database"`
+	Tables    []tableInfo `json:"tables"`
+	Truncated bool        `json:"truncated" jsonschema:"true if the database has more tables than were returned"`
+	Limit     int         `json:"limit" jsonschema:"the applied table limit"`
+	Note      string      `json:"note,omitempty" jsonschema:"guidance when the list was truncated"`
 }
 
 func RegisterListTables(server *mcp.Server, conn driver.Conn) {
@@ -53,12 +61,23 @@ func listTables(ctx context.Context, conn driver.Conn, args listTablesArgs) (*mc
 	if args.Database == "" {
 		return nil, listTablesOutput{}, fmt.Errorf("database is required (call list_databases to see the options)")
 	}
+	limit := args.Limit
+	if limit <= 0 {
+		limit = DefaultTableLimit
+	}
 	qctx := chdriver.DefaultReadContext(ctx)
 
-	tables, err := leanTables(qctx, conn, args.Database, args.Table)
+	// table= addresses exactly one table, so the browse limit does not apply.
+	// Otherwise fetch limit+1 to detect that more tables exist beyond the cut.
+	fetch := limit + 1
+	if args.Table != "" {
+		fetch = 0
+	}
+	tables, err := leanTables(qctx, conn, args.Database, args.Table, fetch)
 	if err != nil {
 		return nil, listTablesOutput{}, err
 	}
+
 	// An empty result is ambiguous — the database may not exist (a common cause is
 	// a case-mismatched name, since ClickHouse names are case-sensitive). Only when
 	// empty, pay one small query to tell the caller which it is.
@@ -75,6 +94,13 @@ func listTables(ctx context.Context, conn driver.Conn, args listTablesArgs) (*mc
 		}
 	}
 
+	out := listTablesOutput{Database: args.Database, Limit: limit}
+	if args.Table == "" && len(tables) > limit {
+		out.Truncated = true
+		tables = tables[:limit]
+		out.Note = fmt.Sprintf("showing %d tables; the database has more. Pass a larger limit or a smaller database to see the rest.", limit)
+	}
+
 	if args.Table != "" || args.Columns {
 		for i := range tables {
 			cols, err := tableColumns(qctx, conn, args.Database, tables[i].Name)
@@ -84,7 +110,8 @@ func listTables(ctx context.Context, conn driver.Conn, args listTablesArgs) (*mc
 			tables[i].Columns = cols
 		}
 	}
-	return nil, listTablesOutput{Database: args.Database, Tables: tables}, nil
+	out.Tables = tables
+	return nil, out, nil
 }
 
 func databaseExists(ctx context.Context, conn driver.Conn, database string) (bool, error) {
@@ -95,7 +122,9 @@ func databaseExists(ctx context.Context, conn driver.Conn, database string) (boo
 	return n > 0, nil
 }
 
-func leanTables(ctx context.Context, conn driver.Conn, database, table string) ([]tableInfo, error) {
+// leanTables returns the lean per-table rows, ordered by name. fetch caps the
+// number of rows (0 = unbounded, used for the single-table table= path).
+func leanTables(ctx context.Context, conn driver.Conn, database, table string, fetch int) ([]tableInfo, error) {
 	// Filter the write-probe's sentinel table defensively — WriteProbe drops it,
 	// but this guarantees it never surfaces even if a drop failed.
 	sql := "SELECT name, engine, total_rows, comment FROM system.tables WHERE database = ? AND name != ?"
@@ -105,6 +134,10 @@ func leanTables(ctx context.Context, conn driver.Conn, database, table string) (
 		qargs = append(qargs, table)
 	}
 	sql += " ORDER BY name"
+	if fetch > 0 {
+		sql += " LIMIT ?"
+		qargs = append(qargs, fetch)
+	}
 
 	rows, err := conn.Query(ctx, sql, qargs...)
 	if err != nil {
