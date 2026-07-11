@@ -17,6 +17,9 @@ import (
 const (
 	DefaultTableLimit       = 200
 	DefaultFoldedTableLimit = 20
+	// MaxColumnsPerTable bounds a single table's folded schema, so a very wide
+	// table (hundreds of columns) does not flood the caller's context.
+	MaxColumnsPerTable = 200
 )
 
 type listTablesArgs struct {
@@ -30,11 +33,12 @@ type listTablesArgs struct {
 // asked for schema (via table= or include_columns). RowCount is null for engines
 // that do not track rows (e.g. views).
 type tableInfo struct {
-	Name     string   `json:"name"`
-	Engine   string   `json:"engine"`
-	RowCount *uint64  `json:"row_count" jsonschema:"total rows, or null for engines that do not track it (e.g. views)"`
-	Comment  string   `json:"comment,omitempty"`
-	Columns  []column `json:"columns,omitempty" jsonschema:"column schema, present only when requested"`
+	Name             string   `json:"name"`
+	Engine           string   `json:"engine"`
+	RowCount         *uint64  `json:"row_count" jsonschema:"total rows, or null for engines that do not track it (e.g. views)"`
+	Comment          string   `json:"comment,omitempty"`
+	Columns          []column `json:"columns,omitempty" jsonschema:"column schema, present only when requested"`
+	ColumnsTruncated bool     `json:"columns_truncated,omitempty" jsonschema:"true if the table has more columns than were returned"`
 }
 
 type column struct {
@@ -116,11 +120,12 @@ func listTables(ctx context.Context, conn driver.Conn, args listTablesArgs) (*mc
 
 	if args.Table != "" || args.Columns {
 		for i := range tables {
-			cols, err := tableColumns(qctx, conn, args.Database, tables[i].Name)
+			cols, truncated, err := tableColumns(qctx, conn, args.Database, tables[i].Name)
 			if err != nil {
 				return nil, listTablesOutput{}, err
 			}
 			tables[i].Columns = cols
+			tables[i].ColumnsTruncated = truncated
 		}
 	}
 	out.Tables = tables
@@ -169,22 +174,29 @@ func leanTables(ctx context.Context, conn driver.Conn, database, table string, f
 	return out, rows.Err()
 }
 
-func tableColumns(ctx context.Context, conn driver.Conn, database, table string) ([]column, error) {
+// tableColumns returns a table's columns, capped at MaxColumnsPerTable so a very
+// wide table does not flood the caller. truncated reports whether more exist.
+func tableColumns(ctx context.Context, conn driver.Conn, database, table string) (cols []column, truncated bool, err error) {
 	rows, err := conn.Query(ctx,
-		"SELECT name, type FROM system.columns WHERE database = ? AND table = ? ORDER BY position",
-		database, table)
+		"SELECT name, type FROM system.columns WHERE database = ? AND table = ? ORDER BY position LIMIT ?",
+		database, table, MaxColumnsPerTable+1)
 	if err != nil {
-		return nil, fmt.Errorf("describe %s.%s: %w", database, table, err)
+		return nil, false, fmt.Errorf("describe %s.%s: %w", database, table, err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var cols []column
 	for rows.Next() {
 		var c column
 		if err := rows.Scan(&c.Name, &c.Type); err != nil {
-			return nil, fmt.Errorf("scan column: %w", err)
+			return nil, false, fmt.Errorf("scan column: %w", err)
 		}
 		cols = append(cols, c)
 	}
-	return cols, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(cols) > MaxColumnsPerTable {
+		return cols[:MaxColumnsPerTable], true, nil
+	}
+	return cols, false, nil
 }

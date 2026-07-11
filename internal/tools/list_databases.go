@@ -10,10 +10,19 @@ import (
 	chdriver "github.com/corker/clickhouse-mcp/internal/clickhouse"
 )
 
-type listDatabasesArgs struct{}
+// DefaultDatabaseLimit bounds how many database names are returned, so a server
+// with many databases (e.g. multi-tenant) does not flood the caller's context.
+const DefaultDatabaseLimit = 200
+
+type listDatabasesArgs struct {
+	Limit int `json:"limit,omitempty" jsonschema:"max databases to return; defaults to 200"`
+}
 
 type listDatabasesOutput struct {
-	Databases []string `json:"databases" jsonschema:"names of all databases on the server"`
+	Databases []string `json:"databases" jsonschema:"names of databases on the server"`
+	Truncated bool     `json:"truncated" jsonschema:"true if the server has more databases than were returned"`
+	Limit     int      `json:"limit" jsonschema:"the applied limit"`
+	Note      string   `json:"note,omitempty" jsonschema:"guidance when the list was truncated"`
 }
 
 func RegisterListDatabases(server *mcp.Server, conn driver.Conn) {
@@ -21,15 +30,20 @@ func RegisterListDatabases(server *mcp.Server, conn driver.Conn) {
 		Name: "list_databases",
 		Description: "Start here: list the databases on the ClickHouse server. " +
 			"Use list_tables next to see a database's tables.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ listDatabasesArgs) (*mcp.CallToolResult, listDatabasesOutput, error) {
-		return listDatabases(ctx, conn)
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args listDatabasesArgs) (*mcp.CallToolResult, listDatabasesOutput, error) {
+		return listDatabases(ctx, conn, args)
 	})
 }
 
-func listDatabases(ctx context.Context, conn driver.Conn) (*mcp.CallToolResult, listDatabasesOutput, error) {
+func listDatabases(ctx context.Context, conn driver.Conn, args listDatabasesArgs) (*mcp.CallToolResult, listDatabasesOutput, error) {
+	limit := args.Limit
+	if limit <= 0 {
+		limit = DefaultDatabaseLimit
+	}
 	qctx := chdriver.DefaultReadContext(ctx)
 
-	rows, err := conn.Query(qctx, "SELECT name FROM system.databases ORDER BY name")
+	// Fetch limit+1 to detect that more exist beyond the cut.
+	rows, err := conn.Query(qctx, "SELECT name FROM system.databases ORDER BY name LIMIT ?", limit+1)
 	if err != nil {
 		return nil, listDatabasesOutput{}, fmt.Errorf("list databases: %w", err)
 	}
@@ -46,5 +60,13 @@ func listDatabases(ctx context.Context, conn driver.Conn) (*mcp.CallToolResult, 
 	if err := rows.Err(); err != nil {
 		return nil, listDatabasesOutput{}, fmt.Errorf("read databases: %w", err)
 	}
-	return nil, listDatabasesOutput{Databases: names}, nil
+
+	out := listDatabasesOutput{Limit: limit}
+	if len(names) > limit {
+		out.Truncated = true
+		names = names[:limit]
+		out.Note = fmt.Sprintf("showing %d databases; the server has more. Pass a larger limit to see the rest.", limit)
+	}
+	out.Databases = names
+	return nil, out, nil
 }

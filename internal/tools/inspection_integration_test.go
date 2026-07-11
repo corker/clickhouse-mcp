@@ -4,7 +4,9 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -29,7 +31,7 @@ func seedInspectionFixture(t *testing.T, conn driver.Conn) {
 
 func TestListDatabases(t *testing.T) {
 	conn := testsupport.Start(t)
-	_, out, err := listDatabases(context.Background(), conn)
+	_, out, err := listDatabases(context.Background(), conn, listDatabasesArgs{})
 	if err != nil {
 		t.Fatalf("listDatabases: %v", err)
 	}
@@ -71,6 +73,40 @@ func TestListTables_Lean(t *testing.T) {
 	// A view has no tracked row count -> null.
 	if view.RowCount != nil {
 		t.Errorf("view row_count should be null, got %v", *view.RowCount)
+	}
+}
+
+// Every collection a tool returns is bounded: database names, and a single
+// table's columns (a wide table must not dump all columns unbounded).
+func TestInspection_PayloadsBounded(t *testing.T) {
+	conn := testsupport.Start(t)
+	ctx := context.Background()
+
+	// list_databases: an explicit tiny limit truncates.
+	_, dbs, err := listDatabases(ctx, conn, listDatabasesArgs{Limit: 2})
+	if err != nil || len(dbs.Databases) != 2 || !dbs.Truncated {
+		t.Errorf("list_databases limit=2 should truncate: n=%d truncated=%v err=%v", len(dbs.Databases), dbs.Truncated, err)
+	}
+
+	// A wide table's columns are capped at MaxColumnsPerTable with a signal.
+	var b strings.Builder
+	for i := 0; i < MaxColumnsPerTable+50; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "c%d UInt8", i)
+	}
+	if err := conn.Exec(ctx, "CREATE TABLE default.wide ("+b.String()+") ENGINE=Memory"); err != nil {
+		t.Fatalf("seed wide: %v", err)
+	}
+	_, out, err := listTables(ctx, conn, listTablesArgs{Database: "default", Table: "wide"})
+	if err != nil {
+		t.Fatalf("list wide: %v", err)
+	}
+	c := out.Tables[0]
+	if len(c.Columns) != MaxColumnsPerTable || !c.ColumnsTruncated {
+		t.Errorf("wide table columns should cap at %d and flag truncated, got %d truncated=%v",
+			MaxColumnsPerTable, len(c.Columns), c.ColumnsTruncated)
 	}
 }
 
