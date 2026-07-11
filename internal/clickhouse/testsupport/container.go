@@ -30,11 +30,10 @@ var (
 	sharedErr  error
 )
 
-// Start returns a connection to a shared ClickHouse container, booting it on the
-// first call within the test binary. The container lives for the whole package
-// run; do not create fixtures in the default database here — use Database for an
-// isolated one. The connection is built through the project's own clickhouse.New
-// so tests exercise the real connection path.
+// Start returns a connection to the shared container (booted once per test
+// binary). Do not create fixtures in the default database here — use Database for
+// an isolated one. Built via the project's own clickhouse.New so tests exercise
+// the real connection path.
 func Start(t *testing.T) driver.Conn {
 	t.Helper()
 	once.Do(func() { sharedConn, sharedErr = boot() })

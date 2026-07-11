@@ -133,8 +133,8 @@ func Bound(sql string, class StmtClass, fetchLimit int) string {
 	}
 }
 
-// Truncation is the shared shape every list-shaped tool embeds to report how
-// many items it returned and whether more existed beyond the applied limit.
+// Truncation is embedded by every list-shaped tool's output so they share one
+// count/truncated/limit/note contract.
 type Truncation struct {
 	Count     int    `json:"count" jsonschema:"number of items returned"`
 	Truncated bool   `json:"truncated" jsonschema:"true if more items existed beyond the limit"`

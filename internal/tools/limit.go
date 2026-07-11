@@ -26,9 +26,8 @@ func resolveLimit(argLimit, def int) int {
 	return def
 }
 
-// truncate caps items to limit and returns the shared query.Truncation reporting
-// the applied limit, the returned count, and (when truncated) guidance. items is
-// expected to hold up to limit+1 (the sentinel used to detect overflow).
+// truncate caps items to limit. items is expected to hold up to limit+1 (the
+// sentinel used to detect overflow).
 //
 // A non-positive limit is treated as "no cap" (return items unchanged): callers
 // pass resolved defaults (always positive), so 0/negative only reaches here by
