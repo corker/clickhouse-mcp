@@ -6,10 +6,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/chcol"
 	"github.com/shopspring/decimal"
 )
 
 func ptr[T any](v T) *T { return &v }
+
+// jsonValue builds a chcol.JSON value with one nested path set, as a scanned
+// JSON column would arrive.
+func jsonValue(path string, v any) chcol.JSON {
+	j := chcol.NewJSON()
+	j.SetValueAtPath(path, v)
+	return *j
+}
 
 func TestToJSONValue(t *testing.T) {
 	s := "hi"
@@ -42,6 +51,13 @@ func TestToJSONValue(t *testing.T) {
 		{"plain int64 passthrough", int64(7), int64(7)},
 		{"plain string passthrough", "x", "x"},
 		{"plain bool passthrough", true, true},
+		// Variant/Dynamic/JSON: the LSP-fix branches — a big int inside a wrapper
+		// type must still become a string, not a lossy JSON number.
+		{"variant uint64 -> string", chcol.NewVariantWithType(uint64(18446744073709551615), "UInt64"), "18446744073709551615"},
+		{"variant nil -> null", chcol.NewVariant(nil), nil},
+		{"variant string passthrough", chcol.NewVariant("hi"), "hi"},
+		{"dynamic (alias) uint64 -> string", chcol.NewDynamicWithType(uint64(5), "UInt64"), "5"},
+		{"json nested uint64 -> string", jsonValue("a.b", uint64(9)), map[string]any{"a": map[string]any{"b": "9"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

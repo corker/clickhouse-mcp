@@ -133,13 +133,17 @@ func TestShape(t *testing.T) {
 }
 
 func TestHasTopLevelOrderBy(t *testing.T) {
-	if !HasTopLevelOrderBy("SELECT 1 ORDER BY x") {
-		t.Error("should detect ORDER BY")
+	tests := []struct {
+		sql  string
+		want bool
+	}{
+		{"SELECT 1 ORDER BY x", true},
+		{"select 1 order by x", true}, // case-insensitive
+		{"select 1", false},
 	}
-	if HasTopLevelOrderBy("select 1") {
-		t.Error("should not detect ORDER BY")
-	}
-	if !HasTopLevelOrderBy("select 1 order by x") {
-		t.Error("should be case-insensitive")
+	for _, tt := range tests {
+		if got := HasTopLevelOrderBy(tt.sql); got != tt.want {
+			t.Errorf("HasTopLevelOrderBy(%q) = %v, want %v", tt.sql, got, tt.want)
+		}
 	}
 }

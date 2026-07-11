@@ -97,9 +97,21 @@ func TestRunQuery_SmallStatements(t *testing.T) {
 	conn := testsupport.Start(t)
 	ctx := context.Background()
 	for _, sql := range []string{"SHOW DATABASES", "DESCRIBE system.numbers", "EXPLAIN SELECT 1"} {
-		if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: sql}); err != nil {
+		_, res, err := runQuery(ctx, conn, runQueryArgs{SQL: sql})
+		if err != nil {
 			t.Errorf("%q should run: %v", sql, err)
+			continue
 		}
+		// These statements always return at least one row (a db list, a column
+		// description, a plan line) — assert the projection wasn't dropped.
+		if res.RowCount == 0 || len(res.Columns) == 0 {
+			t.Errorf("%q: expected rows and columns, got rowcount=%d cols=%v", sql, res.RowCount, res.Columns)
+		}
+	}
+	// DESCRIBE system.numbers must describe the `number` column.
+	_, res, err := runQuery(ctx, conn, runQueryArgs{SQL: "DESCRIBE system.numbers"})
+	if err != nil || len(res.Rows) == 0 || res.Rows[0][0] != "number" {
+		t.Errorf("DESCRIBE should list the number column, got rows=%v err=%v", res.Rows, err)
 	}
 }
 
@@ -129,5 +141,32 @@ func TestRunQuery_RejectsOutputClauses(t *testing.T) {
 	// A column named format must still WORK (not be rejected).
 	if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: "SELECT formatDateTime(now(),'%Y') AS y"}); err != nil {
 		t.Errorf("formatDateTime should work, got: %v", err)
+	}
+}
+
+// A SELECT ending in a trailing line comment must still execute AND return the
+// right rows: the wrap must put ") LIMIT n" on its own line so the comment does
+// not swallow it (a swallowed LIMIT executes fine but returns the wrong rows —
+// so this asserts values, not just the absence of an error).
+func TestRunQuery_TrailingLineComment(t *testing.T) {
+	conn := testsupport.Start(t)
+	ctx := context.Background()
+
+	// Trailing comment on a scalar select.
+	_, res, err := runQuery(ctx, conn, runQueryArgs{SQL: "SELECT 1 AS n -- trailing comment", Limit: 5})
+	if err != nil || res.RowCount != 1 || res.Rows[0][0] != uint8(1) {
+		t.Errorf("scalar with trailing comment: rows=%v err=%v", res.Rows, err)
+	}
+
+	// The LIMIT before the comment must survive the wrap (3 rows, not more/fewer).
+	_, res, err = runQuery(ctx, conn, runQueryArgs{SQL: "SELECT number FROM system.numbers LIMIT 3 -- note", Limit: 5})
+	if err != nil || res.RowCount != 3 || res.Truncated {
+		t.Errorf("trailing comment must not swallow LIMIT 3: rowcount=%d truncated=%v err=%v", res.RowCount, res.Truncated, err)
+	}
+
+	// `--` inside a string literal must round-trip, not be stripped as a comment.
+	_, res, err = runQuery(ctx, conn, runQueryArgs{SQL: "SELECT '--x' AS s", Limit: 5})
+	if err != nil || res.Rows[0][0] != "--x" {
+		t.Errorf("-- inside a literal must round-trip: rows=%v err=%v", res.Rows, err)
 	}
 }
