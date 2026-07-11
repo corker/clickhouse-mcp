@@ -13,10 +13,9 @@ import (
 // The write-probe must report the guard as holding against a normal connection
 // (readonly=2 refuses INSERT), and readonly=2 must actually block a write.
 func TestWriteProbe_GuardHolds(t *testing.T) {
-	conn := testsupport.Start(t)
-	ctx := context.Background()
+	conn, db := testsupport.Database(t)
 
-	guardHolds, err := chdriver.WriteProbe(ctx, conn)
+	guardHolds, err := chdriver.WriteProbe(context.Background(), conn, db)
 	if err != nil {
 		t.Fatalf("write-probe errored: %v", err)
 	}
@@ -26,26 +25,21 @@ func TestWriteProbe_GuardHolds(t *testing.T) {
 }
 
 // The probe must clean up its table so it does not clutter list_tables.
-//
-// The probe tests share the connection's default database and the probe's
-// fixed-name table, so they must NOT run in parallel (no t.Parallel).
 func TestWriteProbe_LeavesNoTable(t *testing.T) {
-	conn := testsupport.Start(t)
+	conn, db := testsupport.Database(t)
 	ctx := context.Background()
 
-	if _, err := chdriver.WriteProbe(ctx, conn); err != nil {
+	if _, err := chdriver.WriteProbe(ctx, conn, db); err != nil {
 		t.Fatalf("write-probe: %v", err)
 	}
-	// Scope the count to the default database the probe writes to, so it can't
-	// see a probe table left by any other database.
 	var count uint64
 	err := conn.QueryRow(ctx,
-		"SELECT count() FROM system.tables WHERE database = 'default' AND name = '__clickhouse_mcp_write_probe__'").Scan(&count)
+		"SELECT count() FROM system.tables WHERE database = ? AND name = ?", db, chdriver.ProbeTable).Scan(&count)
 	if err != nil {
 		t.Fatalf("count probe table: %v", err)
 	}
 	if count != 0 {
-		t.Errorf("probe table should be dropped after probing, found %d", count)
+		t.Errorf("probe table should be dropped after probing in %s, found %d", db, count)
 	}
 }
 

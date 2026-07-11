@@ -8,6 +8,7 @@ package testsupport
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"sync"
 	"testing"
@@ -61,10 +62,10 @@ func Database(t *testing.T) (conn driver.Conn, database string) {
 	return conn, database
 }
 
-// sanitize turns a test name into a valid ClickHouse identifier (letters, digits,
-// underscore); subtests carry a "/" which becomes "_". Note: names differing only
-// by a separator collapse to the same database (e.g. "TestA/b" and "TestA_b"), so
-// keep Database-using test names distinct beyond their separators.
+// sanitize turns a test name into a valid, unique ClickHouse identifier. The
+// readable part maps non-alphanumerics to "_"; a hash of the original name is
+// appended so distinct names that would otherwise collapse to the same string
+// (e.g. "TestA/b" and "TestA_b") never collide on one database.
 func sanitize(name string) string {
 	var b strings.Builder
 	for _, r := range name {
@@ -75,7 +76,9 @@ func sanitize(name string) string {
 			b.WriteByte('_')
 		}
 	}
-	return "test_" + b.String()
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(name))
+	return fmt.Sprintf("test_%s_%08x", b.String(), h.Sum32())
 }
 
 func boot() (driver.Conn, error) {

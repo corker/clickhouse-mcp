@@ -22,7 +22,7 @@ func New(ctx context.Context, name string, cfg *config.Config, conn driver.Conn)
 	tools.RegisterListDatabases(s, conn)
 	tools.RegisterListTables(s, conn)
 
-	guardHolds, err := chdriver.WriteProbe(ctx, conn)
+	guardHolds, err := chdriver.WriteProbe(ctx, conn, cfg.Database)
 	switch {
 	case err != nil:
 		log.Printf("write-probe failed to run (%v); withholding run_query", err)
