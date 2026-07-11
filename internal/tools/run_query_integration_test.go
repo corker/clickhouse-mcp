@@ -135,14 +135,43 @@ func TestRunQuery_SmallStatements(t *testing.T) {
 	}
 }
 
-// run_query no longer rejects writes itself (ADR-0006 — ClickHouse authorizes).
-// A write sent to run_query is not a row-returning statement, so the driver's
-// Query path errors rather than performing it; writes belong on run_statement.
-func TestRunQuery_WriteOnQueryPathErrors(t *testing.T) {
+// run_query gates on row-returning statements: a write is rejected up front and
+// must NOT execute (the driver's Query path would otherwise perform the INSERT
+// and then error on the empty result). Writes belong on run_statement.
+func TestRunQuery_RejectsWriteWithoutExecuting(t *testing.T) {
+	conn, db := testsupport.Database(t)
+	ctx := context.Background()
+	if err := conn.Exec(ctx, "CREATE TABLE "+db+".t (x UInt8) ENGINE=Memory"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	_, _, err := runQuery(ctx, conn, runQueryArgs{SQL: "INSERT INTO " + db + ".t VALUES (1)"})
+	if err == nil {
+		t.Fatal("an INSERT via run_query should be rejected")
+	}
+	if !strings.Contains(err.Error(), "run_statement") {
+		t.Errorf("rejection should point to run_statement, got: %v", err)
+	}
+	// The write must not have happened.
+	var n uint64
+	if err := conn.QueryRow(ctx, "SELECT count() FROM "+db+".t").Scan(&n); err != nil || n != 0 {
+		t.Errorf("rejected write must not execute: count=%d err=%v", n, err)
+	}
+}
+
+// FORMAT / INTO OUTFILE are rejected with a clear message (unwrapped they would
+// yield no rows, and INTO OUTFILE could write a file server-side).
+func TestRunQuery_RejectsOutputClauses(t *testing.T) {
 	conn := testsupport.Start(t)
 	ctx := context.Background()
-	if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: "INSERT INTO t VALUES (1)"}); err == nil {
-		t.Error("an INSERT via run_query (the Query path) should error, not silently write")
+	for _, sql := range []string{"SELECT 1 FORMAT JSON", "SELECT 1 INTO OUTFILE '/tmp/x'"} {
+		if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: sql}); err == nil || !strings.Contains(err.Error(), "not supported") {
+			t.Errorf("%q: want a clear 'not supported' rejection, got: %v", sql, err)
+		}
+	}
+	// A function prefixed with format must still work (not be rejected).
+	if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: "SELECT formatDateTime(now(),'%Y') AS y"}); err != nil {
+		t.Errorf("formatDateTime should work, got: %v", err)
 	}
 }
 

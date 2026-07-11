@@ -28,6 +28,54 @@ func TestCanBound(t *testing.T) {
 	}
 }
 
+func TestIsRowReturning(t *testing.T) {
+	tests := []struct {
+		sql  string
+		want bool
+	}{
+		{"SELECT 1", true},
+		{"WITH x AS (SELECT 1) SELECT * FROM x", true},
+		{"SHOW DATABASES", true},
+		{"DESCRIBE t", true},
+		{"DESC t", true},
+		{"EXPLAIN SELECT 1", true},
+		{"EXISTS TABLE t", true},
+		{"INSERT INTO t VALUES (1)", false},
+		{"CREATE TABLE t (x UInt8) ENGINE=Memory", false},
+		{"DROP TABLE t", false},
+		{"ALTER TABLE t ADD COLUMN y UInt8", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := IsRowReturning(tt.sql); got != tt.want {
+			t.Errorf("IsRowReturning(%q) = %v, want %v", tt.sql, got, tt.want)
+		}
+	}
+}
+
+func TestHasUnsupportedOutputClause(t *testing.T) {
+	tests := []struct {
+		sql  string
+		want bool
+	}{
+		{"SELECT 1 FORMAT JSON", true},
+		{"SELECT 1 format json", true},
+		{"SELECT 1 FORMAT JSON;", true},
+		{"SELECT 1 INTO OUTFILE '/tmp/x'", true},
+		{"SELECT 1", false},
+		{"SELECT format FROM t", false},            // column named format
+		{"SELECT formatDateTime(x) FROM t", false}, // function prefixed with format
+		{"SELECT 'FORMAT' AS s", false},            // FORMAT inside a literal
+		{"SELECT 1 -- FORMAT JSON", false},         // FORMAT in a trailing comment
+		{"SELECT number FROM system.numbers", false},
+	}
+	for _, tt := range tests {
+		if got := HasUnsupportedOutputClause(tt.sql); got != tt.want {
+			t.Errorf("HasUnsupportedOutputClause(%q) = %v, want %v", tt.sql, got, tt.want)
+		}
+	}
+}
+
 func TestBound(t *testing.T) {
 	tests := []struct {
 		name string

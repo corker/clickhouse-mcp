@@ -33,6 +33,13 @@ func RegisterRunQuery(server *mcp.Server, conn driver.Conn) {
 }
 
 func runQuery(ctx context.Context, conn driver.Conn, args runQueryArgs) (*mcp.CallToolResult, query.Result, error) {
+	if !query.IsRowReturning(args.SQL) {
+		return nil, query.Result{}, fmt.Errorf("run_query is for row-returning statements (SELECT/WITH/SHOW/DESCRIBE/EXPLAIN/EXISTS); use run_statement for writes and DDL")
+	}
+	if query.HasUnsupportedOutputClause(args.SQL) {
+		return nil, query.Result{}, fmt.Errorf("FORMAT and INTO OUTFILE are not supported; results are returned as structured rows")
+	}
+
 	limit := args.Limit
 	if limit <= 0 {
 		limit = DefaultRowLimit

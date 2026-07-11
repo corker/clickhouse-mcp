@@ -5,11 +5,45 @@ import (
 	"strings"
 )
 
+// IsRowReturning reports whether a statement produces rows, i.e. belongs on
+// run_query rather than run_statement. This is a routing decision, not an
+// authorization one — ClickHouse's per-user privileges are the boundary
+// (ADR-0006). It keeps a write out of the Query path, where the driver would
+// still execute the write and then error on the empty result set.
+func IsRowReturning(sql string) bool {
+	switch leadingKeyword(sql) {
+	case "SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "EXISTS":
+		return true
+	default:
+		return false
+	}
+}
+
+// HasUnsupportedOutputClause reports whether the query ends in FORMAT or INTO
+// OUTFILE, which redirect output away from the structured rows this tool returns.
+// Unwrapped they run but yield no rows (and INTO OUTFILE may write a file
+// server-side), so run_query rejects them with a clear message instead.
+func HasUnsupportedOutputClause(sql string) bool {
+	upper := strings.ToUpper(strings.TrimRight(strings.TrimSpace(stripLineComments(sql)), "; "))
+	if strings.HasSuffix(upper, "INTO OUTFILE") || strings.Contains(upper, "INTO OUTFILE ") {
+		return true
+	}
+	// FORMAT <name> as the final clause: the last whole-word FORMAT followed only
+	// by a single identifier (the format name).
+	idx := strings.LastIndex(upper, "FORMAT ")
+	if idx < 0 {
+		return false
+	}
+	if idx > 0 && isIdentByte(upper[idx-1]) {
+		return false // part of a longer identifier, e.g. formatDateTime
+	}
+	tail := strings.TrimSpace(upper[idx+len("FORMAT "):])
+	return tail != "" && isIdentifier(tail)
+}
+
 // canBound reports whether a statement can be wrapped in SELECT * FROM (...)
-// LIMIT n+1 for row bounding. SELECT/WITH can; SHOW/DESCRIBE/EXPLAIN/EXISTS and
-// everything else cannot be wrapped and run as-is under the cap ceiling. This is
-// a bounding decision, not an authorization one — ClickHouse's per-user
-// privileges are the boundary (ADR-0006).
+// LIMIT n+1 for row bounding. Only SELECT/WITH accept the wrap; the other
+// row-returning statements run as-is under the cap ceiling.
 func canBound(sql string) bool {
 	switch leadingKeyword(sql) {
 	case "SELECT", "WITH":
@@ -17,6 +51,29 @@ func canBound(sql string) bool {
 	default:
 		return false
 	}
+}
+
+func stripLineComments(sql string) string {
+	lines := strings.Split(sql, "\n")
+	for i, line := range lines {
+		if j := strings.Index(line, "--"); j >= 0 {
+			lines[i] = line[:j]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func isIdentifier(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !isIdentByte(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 // leadingKeyword returns the upper-cased first token, skipping leading
