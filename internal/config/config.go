@@ -14,6 +14,9 @@ type Config struct {
 	Password string
 	Database string
 	Secure   bool
+	// AllowWriteAccess gates write tools. The write path is not implemented yet;
+	// the flag is read so the server can wire tools conditionally.
+	AllowWriteAccess bool
 }
 
 func Load() (*Config, error) {
@@ -28,13 +31,18 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	allowWrite, err := envBool("CLICKHOUSE_ALLOW_WRITE_ACCESS", false)
+	if err != nil {
+		return nil, err
+	}
 	return &Config{
-		Host:     envString("CLICKHOUSE_HOST", "localhost"),
-		Port:     port,
-		User:     envString("CLICKHOUSE_USER", "default"),
-		Password: envString("CLICKHOUSE_PASSWORD", ""),
-		Database: envString("CLICKHOUSE_DATABASE", "default"),
-		Secure:   secure,
+		Host:             envString("CLICKHOUSE_HOST", "localhost"),
+		Port:             port,
+		User:             envString("CLICKHOUSE_USER", "default"),
+		Password:         envString("CLICKHOUSE_PASSWORD", ""),
+		Database:         envString("CLICKHOUSE_DATABASE", "default"),
+		Secure:           secure,
+		AllowWriteAccess: allowWrite,
 	}, nil
 }
 
