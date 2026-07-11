@@ -44,31 +44,49 @@ func runQuery(ctx context.Context, conn driver.Conn, args runQueryArgs) (*mcp.Ca
 		limit = DefaultRowLimit
 	}
 
-	// Bound: SELECT/WITH wrap as SELECT * FROM (...) LIMIT n+1 so we can detect
-	// truncation; small statements run as-is under the cap backstop.
-	sql := query.Bound(args.SQL, class, limit+1)
+	result, err := execBounded(ctx, conn, args.SQL, class, limit)
+	return nil, result, err
+}
+
+// execBounded runs an already-classified read query through the guarded path and
+// shapes the result. It is the reusable core the inspection tools (list_tables,
+// list_databases) call with their own canned SQL, so they need not re-classify or
+// duplicate the scan loop. SELECT/WITH are wrapped with LIMIT displayLimit+1 to
+// detect truncation; small statements run as-is under the cap backstop.
+func execBounded(ctx context.Context, conn driver.Conn, sql string, class query.StmtClass, displayLimit int) (query.Result, error) {
+	bounded := query.Bound(sql, class, displayLimit+1)
 
 	qctx := chdriver.ReadOnlyCappedContext(ctx,
 		chdriver.DefaultMaxResultRows, chdriver.DefaultMaxResultBytes, chdriver.DefaultMaxExecSeconds)
 
-	rows, err := conn.Query(qctx, sql)
+	rows, err := conn.Query(qctx, bounded)
 	if err != nil {
-		return nil, query.Result{}, fmt.Errorf("query failed: %w", err)
+		return query.Result{}, fmt.Errorf("query failed: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	columns := rows.Columns()
+	columns, fetched, err := scanRows(rows)
+	if err != nil {
+		return query.Result{}, err
+	}
+	return query.Shape(columns, fetched, displayLimit, query.HasTopLevelOrderBy(sql)), nil
+}
+
+// scanRows materializes all rows into JSON-safe positional values. The driver
+// rejects Scan into *interface{}, so a typed destination is allocated per column
+// from ColumnTypes().ScanType(), then each scanned value is routed through
+// query.ToJSONValue.
+func scanRows(rows driver.Rows) (columns []string, fetched [][]any, err error) {
+	columns = rows.Columns()
 	cts := rows.ColumnTypes()
-	fetched := [][]any{}
+	fetched = [][]any{}
 	for rows.Next() {
-		// The driver rejects Scan into *interface{}; allocate a typed destination
-		// per column from ColumnTypes().ScanType() and deref after scanning.
 		dest := make([]any, len(cts))
 		for i, ct := range cts {
 			dest[i] = reflect.New(ct.ScanType()).Interface()
 		}
 		if err := rows.Scan(dest...); err != nil {
-			return nil, query.Result{}, fmt.Errorf("scan row: %w", err)
+			return nil, nil, fmt.Errorf("scan row: %w", err)
 		}
 		row := make([]any, len(cts))
 		for i := range cts {
@@ -77,9 +95,7 @@ func runQuery(ctx context.Context, conn driver.Conn, args runQueryArgs) (*mcp.Ca
 		fetched = append(fetched, row)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, query.Result{}, fmt.Errorf("read rows: %w", err)
+		return nil, nil, fmt.Errorf("read rows: %w", err)
 	}
-
-	result := query.Shape(columns, fetched, limit, query.HasTopLevelOrderBy(args.SQL))
-	return nil, result, nil
+	return columns, fetched, nil
 }

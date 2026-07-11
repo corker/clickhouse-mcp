@@ -30,7 +30,7 @@ func main() {
 	}
 	defer func() { _ = conn.Close() }()
 
-	s := server.New(ctx, "clickhouse-mcp", conn)
+	s := server.New(ctx, "clickhouse-mcp", cfg, conn)
 	if err := s.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("server: %v", err)
 	}

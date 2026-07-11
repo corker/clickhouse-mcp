@@ -3,7 +3,9 @@
 package query
 
 import (
+	"fmt"
 	"math/big"
+	"reflect"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -14,40 +16,29 @@ import (
 //
 // Large and exact numeric types are rendered as strings because a JSON number
 // cannot hold them without precision loss: UInt64 and Int128/256 exceed 2^53,
-// and Decimal must keep its exact scale. Times become RFC3339 strings. A
-// []byte scanned from Array(U?Int8) is rendered as a JSON array of numbers —
-// the default JSON encoder would base64-encode it, which is wrong for a numeric
-// array. Nil pointers become JSON null.
+// and Decimal must keep its exact scale. Times become RFC3339 strings.
+//
+// The driver's scan types are an open universe (Nullable(T) is a pointer, arrays
+// are typed slices, Map/Tuple are maps/slices), so after the known scalar cases
+// the function recurses reflectively: pointers are dereferenced (nil -> JSON
+// null), and slices/arrays and maps are converted element-wise. This applies the
+// numeric-string contract to array/map elements too — e.g. Array(UInt64) becomes
+// an array of strings, not lossy JSON numbers. A []byte from Array(U?Int8) stays
+// a numeric array (the default JSON encoder would base64-encode it).
 func ToJSONValue(v any) any {
 	switch x := v.(type) {
 	case nil:
 		return nil
 	case uint64:
 		return u64String(x)
-	case *uint64:
-		if x == nil {
-			return nil
-		}
-		return u64String(*x)
 	case *big.Int:
 		if x == nil {
 			return nil
 		}
 		return x.String()
 	case decimal.Decimal:
-		// Exact decimal — serialize via String() to preserve scale.
-		return x.String()
-	case *decimal.Decimal:
-		if x == nil {
-			return nil
-		}
 		return x.String()
 	case time.Time:
-		return x.Format(time.RFC3339Nano)
-	case *time.Time:
-		if x == nil {
-			return nil
-		}
 		return x.Format(time.RFC3339Nano)
 	case []byte:
 		// Array(U?Int8) scans to []byte; render as a numeric JSON array, not base64.
@@ -57,40 +48,41 @@ func ToJSONValue(v any) any {
 		}
 		return out
 	default:
-		return derefPointer(x)
+		return reflectValue(reflect.ValueOf(v))
+	}
+}
+
+// reflectValue applies the JSON contract to types not matched by the scalar
+// cases above: pointers (Nullable columns), slices/arrays (Array columns), and
+// maps (Map columns). Each element is routed back through ToJSONValue so the
+// numeric-string and time rules apply recursively.
+func reflectValue(rv reflect.Value) any {
+	switch rv.Kind() {
+	case reflect.Pointer:
+		if rv.IsNil() {
+			return nil
+		}
+		return ToJSONValue(rv.Elem().Interface())
+	case reflect.Slice, reflect.Array:
+		out := make([]any, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			out[i] = ToJSONValue(rv.Index(i).Interface())
+		}
+		return out
+	case reflect.Map:
+		// JSON object keys must be strings; ClickHouse Map keys are rendered via
+		// fmt (they are typically String already).
+		out := make(map[string]any, rv.Len())
+		for _, k := range rv.MapKeys() {
+			out[fmt.Sprintf("%v", k.Interface())] = ToJSONValue(rv.MapIndex(k).Interface())
+		}
+		return out
+	default:
+		// Scalars JSON encodes losslessly (int*, uint8/16/32, float*, string, bool).
+		return rv.Interface()
 	}
 }
 
 func u64String(v uint64) string {
 	return new(big.Int).SetUint64(v).String()
-}
-
-// derefPointer unwraps a non-nil pointer to a scalar (e.g. *string from
-// Nullable columns) so the underlying value is marshaled; a nil pointer of any
-// type becomes JSON null. Non-pointer values pass through unchanged.
-func derefPointer(v any) any {
-	switch x := v.(type) {
-	case *string:
-		if x == nil {
-			return nil
-		}
-		return *x
-	case *int64:
-		if x == nil {
-			return nil
-		}
-		return *x
-	case *float64:
-		if x == nil {
-			return nil
-		}
-		return *x
-	case *bool:
-		if x == nil {
-			return nil
-		}
-		return *x
-	default:
-		return v
-	}
 }

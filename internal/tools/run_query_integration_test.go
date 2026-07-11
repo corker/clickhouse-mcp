@@ -60,6 +60,24 @@ func TestRunQuery_Types(t *testing.T) {
 	}
 }
 
+func TestRunQuery_ArrayOfBigInts(t *testing.T) {
+	conn := testsupport.Start(t)
+	// Array(UInt64) elements must be strings, not lossy JSON numbers — the LSP fix.
+	_, res, err := runQuery(context.Background(), conn, runQueryArgs{
+		SQL: "SELECT [toUInt64(18446744073709551615), toUInt64(1)] AS arr",
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	arr, ok := res.Rows[0][0].([]any)
+	if !ok || len(arr) != 2 {
+		t.Fatalf("expected 2-element array, got %#v", res.Rows[0][0])
+	}
+	if arr[0] != "18446744073709551615" {
+		t.Errorf("Array(UInt64) element should be a string, got %#v", arr[0])
+	}
+}
+
 func TestRunQuery_SmallStatements(t *testing.T) {
 	conn := testsupport.Start(t)
 	ctx := context.Background()
