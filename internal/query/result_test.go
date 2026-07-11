@@ -79,6 +79,7 @@ func TestBound(t *testing.T) {
 
 func TestShape(t *testing.T) {
 	cols := []string{"n"}
+	types := []string{"UInt64"}
 	mk := func(count int) [][]any {
 		rows := make([][]any, count)
 		for i := range rows {
@@ -88,7 +89,7 @@ func TestShape(t *testing.T) {
 	}
 
 	t.Run("not truncated when fetched <= limit", func(t *testing.T) {
-		r := Shape(cols, mk(3), 5, false)
+		r := Shape(cols, types, mk(3), 5, false)
 		if r.Truncated || r.Count != 3 || len(r.Rows) != 3 {
 			t.Fatalf("got %+v", r)
 		}
@@ -98,7 +99,7 @@ func TestShape(t *testing.T) {
 	})
 
 	t.Run("truncated at limit+1, sentinel dropped", func(t *testing.T) {
-		r := Shape(cols, mk(6), 5, false) // fetched 6 = displayLimit(5)+1
+		r := Shape(cols, types, mk(6), 5, false) // fetched 6 = displayLimit(5)+1
 		if !r.Truncated || r.Count != 5 || len(r.Rows) != 5 {
 			t.Fatalf("got %+v", r)
 		}
@@ -108,21 +109,21 @@ func TestShape(t *testing.T) {
 	})
 
 	t.Run("exactly at limit is not truncated", func(t *testing.T) {
-		r := Shape(cols, mk(5), 5, false)
+		r := Shape(cols, types, mk(5), 5, false)
 		if r.Truncated {
 			t.Fatalf("5 rows at limit 5 should not be truncated: %+v", r)
 		}
 	})
 
 	t.Run("unordered truncated note says arbitrary", func(t *testing.T) {
-		r := Shape(cols, mk(6), 5, false)
+		r := Shape(cols, types, mk(6), 5, false)
 		if r.Note == "" || !strings.Contains(r.Note, "arbitrary") {
 			t.Errorf("expected arbitrary-subset note, got %q", r.Note)
 		}
 	})
 
 	t.Run("ordered truncated note omits arbitrary", func(t *testing.T) {
-		r := Shape(cols, mk(6), 5, true)
+		r := Shape(cols, types, mk(6), 5, true)
 		if strings.Contains(r.Note, "arbitrary") {
 			t.Errorf("ordered result should not say arbitrary, got %q", r.Note)
 		}
@@ -130,6 +131,30 @@ func TestShape(t *testing.T) {
 			t.Errorf("expected a truncation note")
 		}
 	})
+}
+
+func TestContainsMultipleStatements(t *testing.T) {
+	tests := []struct {
+		sql  string
+		want bool
+	}{
+		{"SELECT 1", false},
+		{"SELECT 1;", false},                          // trailing terminator only
+		{"SELECT 1;  \n ", false},                     // trailing terminator + whitespace
+		{"SELECT 1; SELECT 2", true},                  // two statements
+		{"SELECT 1;SELECT 2;", true},                  // two statements, both terminated
+		{"SELECT ';' AS s", false},                    // semicolon inside a string literal
+		{"SELECT 1 -- ; not a separator", false},      // semicolon in a line comment
+		{"SELECT 1 /* ; still safe */ FROM t", false}, // semicolon in a block comment
+		{"SELECT `a;b` FROM t", false},                // semicolon in a backtick identifier
+		{"SELECT 'a'; DROP TABLE t", true},            // real separator after a literal closes
+		{"SELECT '\\';' AS s", false},                 // escaped quote keeps the literal open
+	}
+	for _, tt := range tests {
+		if got := ContainsMultipleStatements(tt.sql); got != tt.want {
+			t.Errorf("ContainsMultipleStatements(%q) = %v, want %v", tt.sql, got, tt.want)
+		}
+	}
 }
 
 func TestHasTopLevelOrderBy(t *testing.T) {

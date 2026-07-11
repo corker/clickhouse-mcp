@@ -61,6 +61,41 @@ func TestRunQuery_Types(t *testing.T) {
 	}
 }
 
+func TestRunQuery_ColumnTypes(t *testing.T) {
+	conn := testsupport.Start(t)
+	// column_types tells the caller which stringified values are numerics.
+	_, res, err := runQuery(context.Background(), conn, runQueryArgs{
+		SQL: "SELECT toUInt64(1) AS u, CAST(1.5 AS Decimal(10,2)) AS d, 'hi' AS s",
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(res.ColumnTypes) != len(res.Columns) {
+		t.Fatalf("column_types must align with columns: types=%v cols=%v", res.ColumnTypes, res.Columns)
+	}
+	if res.ColumnTypes[0] != "UInt64" || res.ColumnTypes[2] != "String" {
+		t.Errorf("expected UInt64 and String types, got %v", res.ColumnTypes)
+	}
+	if !strings.HasPrefix(res.ColumnTypes[1], "Decimal") {
+		t.Errorf("expected a Decimal type for column d, got %q", res.ColumnTypes[1])
+	}
+}
+
+func TestRunQuery_RejectsMultipleStatements(t *testing.T) {
+	conn := testsupport.Start(t)
+	_, _, err := runQuery(context.Background(), conn, runQueryArgs{SQL: "SELECT 1; SELECT 2"})
+	if err == nil {
+		t.Fatal("two statements should be rejected")
+	}
+	// The message must be the clean tool error, never a leaked wrapper syntax error.
+	if !strings.Contains(err.Error(), "one statement") {
+		t.Errorf("want a clear 'one statement' message, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "LIMIT") {
+		t.Errorf("error must not leak the injected LIMIT wrapper: %v", err)
+	}
+}
+
 func TestRunQuery_ArrayOfBigInts(t *testing.T) {
 	conn := testsupport.Start(t)
 	// Array(UInt64) elements must be strings, not lossy JSON numbers — the LSP fix.

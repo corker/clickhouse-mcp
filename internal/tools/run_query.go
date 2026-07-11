@@ -22,9 +22,10 @@ type runQueryArgs struct {
 func RegisterRunQuery(server *mcp.Server, conn driver.Conn) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "run_query",
-		Description: "Run a read-only ClickHouse query and return typed rows. " +
-			"Only SELECT/WITH/SHOW/DESCRIBE/EXPLAIN/EXISTS are allowed. Large " +
-			"integers and decimals are returned as strings to avoid precision loss.",
+		Description: "Run a single read-only ClickHouse query and return typed rows " +
+			"plus each column's type. Only SELECT/WITH/SHOW/DESCRIBE/EXPLAIN/EXISTS " +
+			"are allowed. Large integers and decimals are returned as strings to " +
+			"avoid precision loss; use column_types to tell those from real strings.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args runQueryArgs) (*mcp.CallToolResult, query.Result, error) {
 		return runQuery(ctx, conn, args)
 	})
@@ -37,6 +38,9 @@ func runQuery(ctx context.Context, conn driver.Conn, args runQueryArgs) (*mcp.Ca
 	}
 	if query.HasUnsupportedOutputClause(args.SQL) {
 		return nil, query.Result{}, fmt.Errorf("FORMAT and INTO OUTFILE are not supported; results are returned as structured rows")
+	}
+	if query.ContainsMultipleStatements(args.SQL) {
+		return nil, query.Result{}, fmt.Errorf("only one statement per call is supported; send a single read-only query")
 	}
 
 	limit := args.Limit
@@ -62,18 +66,22 @@ func execBounded(ctx context.Context, conn driver.Conn, sql string, class query.
 	}
 	defer func() { _ = rows.Close() }()
 
-	columns, fetched, err := scanRows(rows)
+	columns, columnTypes, fetched, err := scanRows(rows)
 	if err != nil {
 		return query.Result{}, err
 	}
-	return query.Shape(columns, fetched, displayLimit, query.HasTopLevelOrderBy(sql)), nil
+	return query.Shape(columns, columnTypes, fetched, displayLimit, query.HasTopLevelOrderBy(sql)), nil
 }
 
 // scanRows materializes all rows. The driver rejects Scan into *interface{}, so a
 // typed destination is allocated per column from ColumnTypes().ScanType().
-func scanRows(rows driver.Rows) (columns []string, fetched [][]any, err error) {
+func scanRows(rows driver.Rows) (columns, columnTypes []string, fetched [][]any, err error) {
 	columns = rows.Columns()
 	cts := rows.ColumnTypes()
+	columnTypes = make([]string, len(cts))
+	for i, ct := range cts {
+		columnTypes[i] = ct.DatabaseTypeName()
+	}
 	fetched = [][]any{}
 	for rows.Next() {
 		dest := make([]any, len(cts))
@@ -81,7 +89,7 @@ func scanRows(rows driver.Rows) (columns []string, fetched [][]any, err error) {
 			dest[i] = reflect.New(ct.ScanType()).Interface()
 		}
 		if err := rows.Scan(dest...); err != nil {
-			return nil, nil, fmt.Errorf("scan row: %w", err)
+			return nil, nil, nil, fmt.Errorf("scan row: %w", err)
 		}
 		row := make([]any, len(cts))
 		for i := range cts {
@@ -90,7 +98,7 @@ func scanRows(rows driver.Rows) (columns []string, fetched [][]any, err error) {
 		fetched = append(fetched, row)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("read rows: %w", err)
+		return nil, nil, nil, fmt.Errorf("read rows: %w", err)
 	}
-	return columns, fetched, nil
+	return columns, columnTypes, fetched, nil
 }
