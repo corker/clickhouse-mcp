@@ -130,8 +130,10 @@ func TestShape(t *testing.T) {
 		if !r.Truncated || r.Count != 5 || len(r.Rows) != 5 {
 			t.Fatalf("got %+v", r)
 		}
-		if r.Limit != 5 {
-			t.Errorf("limit = %d, want 5", r.Limit)
+		// The dropped row must be the last one (the sentinel), so the kept rows are
+		// the first 5 (values 0..4), not an arbitrary subset.
+		if r.Rows[4][0] != 4 {
+			t.Errorf("kept rows should be the first 5 (0..4); last kept = %v, want 4", r.Rows[4][0])
 		}
 	})
 

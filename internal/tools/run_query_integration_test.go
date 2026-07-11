@@ -61,9 +61,12 @@ func TestRunQuery_Types(t *testing.T) {
 	}
 }
 
-func TestRunQuery_ColumnTypes(t *testing.T) {
+// column_types earns its place by letting a caller tell a stringified numeric
+// from a real string: a UInt64 and a String both arrive as JSON strings, and
+// only column_types distinguishes them. This asserts that disambiguation, not
+// merely that the slice is populated and aligned.
+func TestRunQuery_ColumnTypesDisambiguateStringifiedNumerics(t *testing.T) {
 	conn := testsupport.Start(t)
-	// column_types tells the caller which stringified values are numerics.
 	_, res, err := runQuery(context.Background(), conn, runQueryArgs{
 		SQL: "SELECT toUInt64(1) AS u, CAST(1.5 AS Decimal(10,2)) AS d, 'hi' AS s",
 	})
@@ -71,13 +74,24 @@ func TestRunQuery_ColumnTypes(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	if len(res.ColumnTypes) != len(res.Columns) {
-		t.Fatalf("column_types must align with columns: types=%v cols=%v", res.ColumnTypes, res.Columns)
+		t.Fatalf("column_types must align 1:1 with columns: types=%v cols=%v", res.ColumnTypes, res.Columns)
 	}
-	if res.ColumnTypes[0] != "UInt64" || res.ColumnTypes[2] != "String" {
-		t.Errorf("expected UInt64 and String types, got %v", res.ColumnTypes)
+
+	// The numeric and the real string are indistinguishable by value alone...
+	u, uOK := res.Rows[0][0].(string)
+	s, sOK := res.Rows[0][2].(string)
+	if !uOK || !sOK || u != "1" || s != "hi" {
+		t.Fatalf("expected both cells as strings \"1\" and \"hi\", got %#v and %#v", res.Rows[0][0], res.Rows[0][2])
+	}
+	// ...and only column_types tells the caller which one to reparse as a number.
+	if res.ColumnTypes[0] != "UInt64" {
+		t.Errorf("column u must be typed UInt64 so the caller reparses %q as a number, got %q", u, res.ColumnTypes[0])
+	}
+	if res.ColumnTypes[2] != "String" {
+		t.Errorf("column s must be typed String so the caller leaves %q alone, got %q", s, res.ColumnTypes[2])
 	}
 	if !strings.HasPrefix(res.ColumnTypes[1], "Decimal") {
-		t.Errorf("expected a Decimal type for column d, got %q", res.ColumnTypes[1])
+		t.Errorf("column d must be typed Decimal, got %q", res.ColumnTypes[1])
 	}
 }
 
@@ -159,18 +173,12 @@ func TestRunQuery_RejectsWriteWithoutExecuting(t *testing.T) {
 	}
 }
 
-// FORMAT / INTO OUTFILE are rejected with a clear message (unwrapped they would
-// yield no rows, and INTO OUTFILE could write a file server-side).
-func TestRunQuery_RejectsOutputClauses(t *testing.T) {
+// The FORMAT/OUTFILE rejection is unit-tested in gate_test.go; this needs a live
+// server only to prove the false-positive guard — a function prefixed with
+// "format" must execute, not be mistaken for a FORMAT clause.
+func TestRunQuery_FormatPrefixedFunctionRuns(t *testing.T) {
 	conn := testsupport.Start(t)
-	ctx := context.Background()
-	for _, sql := range []string{"SELECT 1 FORMAT JSON", "SELECT 1 INTO OUTFILE '/tmp/x'"} {
-		if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: sql}); err == nil || !strings.Contains(err.Error(), "not supported") {
-			t.Errorf("%q: want a clear 'not supported' rejection, got: %v", sql, err)
-		}
-	}
-	// A function prefixed with format must still work (not be rejected).
-	if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: "SELECT formatDateTime(now(),'%Y') AS y"}); err != nil {
+	if _, _, err := runQuery(context.Background(), conn, runQueryArgs{SQL: "SELECT formatDateTime(now(),'%Y') AS y"}); err != nil {
 		t.Errorf("formatDateTime should work, got: %v", err)
 	}
 }
