@@ -4,6 +4,7 @@ package query
 
 import (
 	"fmt"
+	"math"
 	"math/big"
 	"reflect"
 	"strings"
@@ -38,6 +39,10 @@ func ToJSONValue(v any, dbType string) any {
 		return x.String()
 	case decimal.Decimal:
 		return x.String()
+	case float64:
+		return finiteOrNull(x)
+	case float32:
+		return finiteOrNull(float64(x))
 	case time.Time:
 		// A Date/Date32 has no time-of-day; render it as a calendar date rather
 		// than inventing a midnight-UTC datetime. DateTime/DateTime64 keep RFC3339.
@@ -194,7 +199,8 @@ func reflectValue(rv reflect.Value, dbType string) any {
 		}
 		return out
 	default:
-		// Scalars JSON encodes losslessly (int*, uint8/16/32, float*, string, bool).
+		// Small scalars JSON encodes losslessly (int*, uint8/16/32, string, bool).
+		// Floats are handled in ToJSONValue (Inf/NaN → null) before reaching here.
 		return rv.Interface()
 	}
 }
@@ -214,4 +220,14 @@ func mapKeyString(k any, keyType string) string {
 
 func u64String(v uint64) string {
 	return new(big.Int).SetUint64(v).String()
+}
+
+// finiteOrNull returns v as-is, or nil for Inf/NaN — JSON has no representation
+// for them and json.Marshal errors on them, which would fail the whole result.
+// ClickHouse's own JSON formats render these as null, so this matches.
+func finiteOrNull(v float64) any {
+	if math.IsInf(v, 0) || math.IsNaN(v) {
+		return nil
+	}
+	return v
 }

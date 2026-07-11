@@ -1,6 +1,7 @@
 package query
 
 import (
+	"math"
 	"math/big"
 	"reflect"
 	"testing"
@@ -105,6 +106,14 @@ func TestToJSONValue(t *testing.T) {
 		{"plain int64 passthrough", int64(7), "Int64", int64(7)},
 		{"plain string passthrough", "x", "String", "x"},
 		{"plain bool passthrough", true, "Bool", true},
+		// Inf/NaN have no JSON representation and would fail json.Marshal for the
+		// whole result; render them as null (matching ClickHouse's JSON formats).
+		{"finite float passthrough", float64(1.5), "Float64", float64(1.5)},
+		{"float32 passthrough", float32(2.5), "Float32", float64(2.5)},
+		{"+Inf -> null", math.Inf(1), "Float64", nil},
+		{"-Inf -> null", math.Inf(-1), "Float64", nil},
+		{"NaN -> null", math.NaN(), "Float64", nil},
+		{"Inf inside array -> null", []float64{1.5, math.Inf(1)}, "Array(Float64)", []any{float64(1.5), nil}},
 		// Variant/Dynamic/JSON: the LSP-fix branches — a big int inside a wrapper
 		// type must still become a string, not a lossy JSON number.
 		{"variant uint64 -> string", chcol.NewVariantWithType(uint64(18446744073709551615), "UInt64"), "Variant(UInt64)", "18446744073709551615"},
