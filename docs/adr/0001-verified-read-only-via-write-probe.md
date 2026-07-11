@@ -1,6 +1,12 @@
 # Verified read-only via startup write-probe, fail-closed
 
-**Status:** accepted (amended 2026-07-11 after runtime verification)
+**Status:** superseded by [ADR-0006](0006-clickhouse-rbac-is-the-authorization-boundary.md) (2026-07-11)
+
+> **Superseded.** Runtime verification showed the `readonly=2` guard this ADR relies on is
+> bypassable by an in-query `SETTINGS readonly=0`, so the write-probe verified a property that is
+> not the boundary it claimed. Authorization now rests on the connected ClickHouse user's
+> privileges (RBAC). See ADR-0006. The verified facts below (the temp-table exemption, the caps
+> behavior) remain accurate and still inform the driver notes.
 
 `run_query` must be read-only, and must *also* apply row/byte caps. We enforce read-only
 with ClickHouse's `readonly=2` server setting (not Go SQL parsing) and we *verify* it with a
