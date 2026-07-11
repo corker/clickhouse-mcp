@@ -62,6 +62,9 @@ func TestListTables_Lean(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listTables: %v", err)
 	}
+	if out.Count != len(out.Tables) {
+		t.Errorf("count should match the returned tables: count=%d len=%d", out.Count, len(out.Tables))
+	}
 	var orders, view *tableInfo
 	for i := range out.Tables {
 		switch out.Tables[i].Name {
@@ -95,16 +98,17 @@ func TestListDatabases_Truncation(t *testing.T) {
 
 	// A tiny explicit limit truncates with a note that mentions the count.
 	_, dbs, err := listDatabases(ctx, conn, listDatabasesArgs{Limit: 2})
-	if err != nil || len(dbs.Databases) != 2 || !dbs.Truncated || !strings.Contains(dbs.Note, "2") {
-		t.Errorf("limit=2 should truncate with a note: n=%d truncated=%v note=%q err=%v",
-			len(dbs.Databases), dbs.Truncated, dbs.Note, err)
+	if err != nil || len(dbs.Databases) != 2 || dbs.Count != 2 || !dbs.Truncated || !strings.Contains(dbs.Note, "2") {
+		t.Errorf("limit=2 should truncate with count=2 and a note: n=%d count=%d truncated=%v note=%q err=%v",
+			len(dbs.Databases), dbs.Count, dbs.Truncated, dbs.Note, err)
 	}
 
-	// The common (non-truncated) case is clean: no truncation, no note, default limit.
+	// The common (non-truncated) case is clean: no truncation, no note, default
+	// limit, and count matching the returned list.
 	_, all, err := listDatabases(ctx, conn, listDatabasesArgs{})
-	if err != nil || all.Truncated || all.Note != "" || all.Limit != DefaultDatabaseLimit {
-		t.Errorf("small server should not truncate: truncated=%v note=%q limit=%d err=%v",
-			all.Truncated, all.Note, all.Limit, err)
+	if err != nil || all.Truncated || all.Note != "" || all.Limit != DefaultDatabaseLimit || all.Count != len(all.Databases) {
+		t.Errorf("small server should not truncate: truncated=%v note=%q limit=%d count=%d len=%d err=%v",
+			all.Truncated, all.Note, all.Limit, all.Count, len(all.Databases), err)
 	}
 }
 
@@ -135,8 +139,8 @@ func TestListTables_SingleTableSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listTables table=: %v", err)
 	}
-	if len(out.Tables) != 1 || out.Tables[0].Name != "orders" {
-		t.Fatalf("expected only orders, got %+v", out.Tables)
+	if len(out.Tables) != 1 || out.Count != 1 || out.Tables[0].Name != "orders" {
+		t.Fatalf("expected only orders with count=1, got count=%d %+v", out.Count, out.Tables)
 	}
 	cols := out.Tables[0].Columns
 	if len(cols) != 2 || cols[0].Name != "id" || cols[0].Type != "UInt64" {
@@ -195,8 +199,9 @@ func TestListTables_Truncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(out.Tables) != 5 || !out.Truncated || out.Limit != 5 || out.Note == "" {
-		t.Errorf("expected 5 tables truncated with a note, got %d truncated=%v note=%q", len(out.Tables), out.Truncated, out.Note)
+	if len(out.Tables) != 5 || out.Count != 5 || !out.Truncated || out.Limit != 5 || out.Note == "" {
+		t.Errorf("expected 5 tables truncated with count=5 and a note, got count=%d len=%d truncated=%v note=%q",
+			out.Count, len(out.Tables), out.Truncated, out.Note)
 	}
 
 	// table= addresses one table and must ignore the browse limit.
@@ -204,8 +209,10 @@ func TestListTables_Truncation(t *testing.T) {
 		t.Fatalf("seed zz: %v", err)
 	}
 	_, one, err := listTables(ctx, conn, listTablesArgs{Database: db, Table: "zz", Limit: 1})
-	if err != nil || len(one.Tables) != 1 || one.Truncated || len(one.Tables[0].Columns) != 2 {
-		t.Errorf("table= should ignore limit and return full schema: tables=%d truncated=%v err=%v", len(one.Tables), one.Truncated, err)
+	// table= reports count=1 via the manual-literal path (not truncate()).
+	if err != nil || len(one.Tables) != 1 || one.Count != 1 || one.Truncated || len(one.Tables[0].Columns) != 2 {
+		t.Errorf("table= should ignore limit and return one table (count=1): count=%d tables=%d truncated=%v err=%v",
+			one.Count, len(one.Tables), one.Truncated, err)
 	}
 }
 
