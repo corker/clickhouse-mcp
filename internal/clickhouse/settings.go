@@ -37,3 +37,8 @@ func ReadOnlyCappedContext(ctx context.Context, maxRows, maxBytes, maxExecSecond
 		"max_execution_time":   maxExecSeconds,
 	}))
 }
+
+// DefaultReadContext is the read-only context every tool uses: the default caps.
+func DefaultReadContext(ctx context.Context) context.Context {
+	return ReadOnlyCappedContext(ctx, DefaultMaxResultRows, DefaultMaxResultBytes, DefaultMaxExecSeconds)
+}

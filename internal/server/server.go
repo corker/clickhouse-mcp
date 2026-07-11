@@ -19,6 +19,8 @@ import (
 func New(ctx context.Context, name string, cfg *config.Config, conn driver.Conn) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: name}, nil)
 	tools.RegisterPing(s, conn)
+	tools.RegisterListDatabases(s, conn)
+	tools.RegisterListTables(s, conn)
 
 	guardHolds, err := chdriver.WriteProbe(ctx, conn)
 	switch {
