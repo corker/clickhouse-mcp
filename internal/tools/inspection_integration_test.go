@@ -165,6 +165,28 @@ func TestListTables_IncludeColumns(t *testing.T) {
 	}
 }
 
+// include_columns uses a tighter default limit than a lean listing (folding every
+// column of every table is a bigger payload), so a large database truncates
+// rather than dumping every column. An explicit limit still overrides.
+func TestListTables_IncludeColumnsTighterDefault(t *testing.T) {
+	conn := testsupport.Start(t)
+	ctx := context.Background()
+
+	_, folded, err := listTables(ctx, conn, listTablesArgs{Database: "system", Columns: true})
+	if err != nil {
+		t.Fatalf("include_columns system: %v", err)
+	}
+	if len(folded.Tables) != DefaultFoldedTableLimit || !folded.Truncated {
+		t.Errorf("folded default should cap at %d and truncate, got %d truncated=%v",
+			DefaultFoldedTableLimit, len(folded.Tables), folded.Truncated)
+	}
+	// The lean listing keeps the larger default (not clamped by include_columns).
+	_, lean, _ := listTables(ctx, conn, listTablesArgs{Database: "system"})
+	if len(lean.Tables) <= DefaultFoldedTableLimit {
+		t.Errorf("lean listing should not be clamped to the folded limit, got %d", len(lean.Tables))
+	}
+}
+
 func TestListTables_RequiresDatabase(t *testing.T) {
 	conn := testsupport.Start(t)
 	if _, _, err := listTables(context.Background(), conn, listTablesArgs{}); err == nil {

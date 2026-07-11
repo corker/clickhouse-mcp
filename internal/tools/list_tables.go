@@ -11,8 +11,13 @@ import (
 )
 
 // DefaultTableLimit bounds how many tables a lean listing returns, so a large
-// database does not flood the caller's context.
-const DefaultTableLimit = 200
+// database does not flood the caller's context. DefaultFoldedTableLimit is the
+// tighter default when include_columns folds every table's schema (many columns
+// per table), enforcing the tool's "small databases only" guidance.
+const (
+	DefaultTableLimit       = 200
+	DefaultFoldedTableLimit = 20
+)
 
 type listTablesArgs struct {
 	Database string `json:"database" jsonschema:"the database to list tables from"`
@@ -63,7 +68,15 @@ func listTables(ctx context.Context, conn driver.Conn, args listTablesArgs) (*mc
 	}
 	limit := args.Limit
 	if limit <= 0 {
-		limit = DefaultTableLimit
+		// include_columns folds every column of every table, so its default is
+		// much tighter than a lean listing — folding 200 wide tables would be the
+		// context bomb this tool is meant to avoid (it is documented "small
+		// databases only"). An explicit limit still overrides.
+		if args.Columns {
+			limit = DefaultFoldedTableLimit
+		} else {
+			limit = DefaultTableLimit
+		}
 	}
 	qctx := chdriver.DefaultReadContext(ctx)
 
