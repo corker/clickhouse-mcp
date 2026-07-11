@@ -52,10 +52,10 @@ func runQuery(ctx context.Context, conn driver.Conn, args runQueryArgs) (*mcp.Ca
 }
 
 // execBounded runs an already-classified read query through the guarded path and
-// shapes the result. It is the reusable core the inspection tools (list_tables,
-// list_databases) call with their own canned SQL, so they need not re-classify or
-// duplicate the scan loop. SELECT/WITH are wrapped with LIMIT displayLimit+1 to
-// detect truncation; small statements run as-is under the cap backstop.
+// shapes the result — the reusable core a caller invokes with its own trusted SQL
+// and statement class, without re-classifying or duplicating the scan loop.
+// SELECT/WITH are wrapped with LIMIT displayLimit+1 to detect truncation; small
+// statements run as-is under the cap backstop.
 func execBounded(ctx context.Context, conn driver.Conn, sql string, class query.StmtClass, displayLimit int) (query.Result, error) {
 	bounded := query.Bound(sql, class, displayLimit+1)
 

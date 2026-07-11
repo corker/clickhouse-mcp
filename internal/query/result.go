@@ -65,7 +65,6 @@ func HasUnsupportedOutputClause(sql string) bool {
 	return tail != "" && isIdentifier(tail)
 }
 
-// stripLineComments removes `-- ...` comments (to end of line) from each line.
 func stripLineComments(sql string) string {
 	lines := strings.Split(sql, "\n")
 	for i, line := range lines {
