@@ -70,18 +70,7 @@ func listTables(ctx context.Context, conn driver.Conn, args listTablesArgs) (*mc
 	if args.Database == "" {
 		return nil, listTablesOutput{}, fmt.Errorf("database is required (call list_databases to see the options)")
 	}
-	limit := args.Limit
-	if limit <= 0 {
-		// include_columns folds every column of every table, so its default is
-		// much tighter than a lean listing — folding 200 wide tables would be the
-		// context bomb this tool is meant to avoid (it is documented "small
-		// databases only"). An explicit limit still overrides.
-		if args.Columns {
-			limit = DefaultFoldedTableLimit
-		} else {
-			limit = DefaultTableLimit
-		}
-	}
+	limit := resolveTableLimit(args.Limit, args.Columns)
 	qctx := chdriver.DefaultReadContext(ctx)
 
 	// table= addresses exactly one table, so the browse limit does not apply.
@@ -112,10 +101,8 @@ func listTables(ctx context.Context, conn driver.Conn, args listTablesArgs) (*mc
 	}
 
 	out := listTablesOutput{Database: args.Database, Limit: limit}
-	if args.Table == "" && len(tables) > limit {
-		out.Truncated = true
-		tables = tables[:limit]
-		out.Note = fmt.Sprintf("showing %d tables; the database has more. Pass a larger limit or a smaller database to see the rest.", limit)
+	if args.Table == "" {
+		tables, out.Truncated, out.Note = truncate(tables, limit, "tables")
 	}
 
 	if args.Table != "" || args.Columns {

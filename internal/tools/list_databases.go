@@ -36,10 +36,7 @@ func RegisterListDatabases(server *mcp.Server, conn driver.Conn) {
 }
 
 func listDatabases(ctx context.Context, conn driver.Conn, args listDatabasesArgs) (*mcp.CallToolResult, listDatabasesOutput, error) {
-	limit := args.Limit
-	if limit <= 0 {
-		limit = DefaultDatabaseLimit
-	}
+	limit := resolveLimit(args.Limit, DefaultDatabaseLimit)
 	qctx := chdriver.DefaultReadContext(ctx)
 
 	// Fetch limit+1 to detect that more exist beyond the cut.
@@ -62,11 +59,7 @@ func listDatabases(ctx context.Context, conn driver.Conn, args listDatabasesArgs
 	}
 
 	out := listDatabasesOutput{Limit: limit}
-	if len(names) > limit {
-		out.Truncated = true
-		names = names[:limit]
-		out.Note = fmt.Sprintf("showing %d databases; the server has more. Pass a larger limit to see the rest.", limit)
-	}
+	names, out.Truncated, out.Note = truncate(names, limit, "databases")
 	out.Databases = names
 	return nil, out, nil
 }

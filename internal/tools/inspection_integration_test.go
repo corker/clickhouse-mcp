@@ -76,19 +76,30 @@ func TestListTables_Lean(t *testing.T) {
 	}
 }
 
-// Every collection a tool returns is bounded: database names, and a single
-// table's columns (a wide table must not dump all columns unbounded).
-func TestInspection_PayloadsBounded(t *testing.T) {
+func TestListDatabases_Truncation(t *testing.T) {
 	conn := testsupport.Start(t)
 	ctx := context.Background()
 
-	// list_databases: an explicit tiny limit truncates.
+	// A tiny explicit limit truncates with a note that mentions the count.
 	_, dbs, err := listDatabases(ctx, conn, listDatabasesArgs{Limit: 2})
-	if err != nil || len(dbs.Databases) != 2 || !dbs.Truncated {
-		t.Errorf("list_databases limit=2 should truncate: n=%d truncated=%v err=%v", len(dbs.Databases), dbs.Truncated, err)
+	if err != nil || len(dbs.Databases) != 2 || !dbs.Truncated || !strings.Contains(dbs.Note, "2") {
+		t.Errorf("limit=2 should truncate with a note: n=%d truncated=%v note=%q err=%v",
+			len(dbs.Databases), dbs.Truncated, dbs.Note, err)
 	}
 
-	// A wide table's columns are capped at MaxColumnsPerTable with a signal.
+	// The common (non-truncated) case is clean: no truncation, no note, default limit.
+	_, all, err := listDatabases(ctx, conn, listDatabasesArgs{})
+	if err != nil || all.Truncated || all.Note != "" || all.Limit != DefaultDatabaseLimit {
+		t.Errorf("small server should not truncate: truncated=%v note=%q limit=%d err=%v",
+			all.Truncated, all.Note, all.Limit, err)
+	}
+}
+
+// A single wide table's columns are capped at MaxColumnsPerTable with a signal.
+func TestListTables_ColumnCap(t *testing.T) {
+	conn := testsupport.Start(t)
+	ctx := context.Background()
+
 	var b strings.Builder
 	for i := 0; i < MaxColumnsPerTable+50; i++ {
 		if i > 0 {
@@ -127,28 +138,33 @@ func TestListTables_SingleTableSchema(t *testing.T) {
 	}
 }
 
-func TestListTables_NotFound(t *testing.T) {
+// Bad arguments each produce a clear error (case-sensitive names included).
+func TestListTables_ArgErrors(t *testing.T) {
 	conn := testsupport.Start(t)
-	_, _, err := listTables(context.Background(), conn, listTablesArgs{Database: "default", Table: "nope"})
-	if err == nil {
-		t.Fatal("expected a not-found error for a missing table, got nil")
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		args listTablesArgs
+	}{
+		{"missing table", listTablesArgs{Database: "default", Table: "nope"}},
+		{"missing database", listTablesArgs{Database: "does_not_exist"}},
+		{"wrong-case database", listTablesArgs{Database: "DEFAULT"}}, // names are case-sensitive
+		{"database required", listTablesArgs{}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, _, err := listTables(ctx, conn, tt.args); err == nil {
+				t.Errorf("expected an error for %+v, got nil", tt.args)
+			}
+		})
 	}
 }
 
-// A missing (or wrong-case) database errors clearly, but a real-but-empty
-// database returns an empty list without error — the two must be distinguished.
-func TestListTables_MissingVsEmptyDatabase(t *testing.T) {
+// A real-but-empty database returns [] without error — distinct from the missing
+// database above, which errors.
+func TestListTables_EmptyDatabaseIsNotAnError(t *testing.T) {
 	conn := testsupport.Start(t)
 	ctx := context.Background()
-
-	if _, _, err := listTables(ctx, conn, listTablesArgs{Database: "does_not_exist"}); err == nil {
-		t.Error("missing database should error, not return empty")
-	}
-	// ClickHouse names are case-sensitive: DEFAULT != default.
-	if _, _, err := listTables(ctx, conn, listTablesArgs{Database: "DEFAULT"}); err == nil {
-		t.Error("wrong-case database should error (case-sensitive)")
-	}
-
 	if err := conn.Exec(ctx, "CREATE DATABASE IF NOT EXISTS empty_db"); err != nil {
 		t.Fatalf("create empty_db: %v", err)
 	}
@@ -156,8 +172,8 @@ func TestListTables_MissingVsEmptyDatabase(t *testing.T) {
 	if err != nil {
 		t.Errorf("existing-but-empty database should not error, got: %v", err)
 	}
-	if out.Tables == nil || len(out.Tables) != 0 {
-		t.Errorf("empty database should return [], got %v", out.Tables)
+	if out.Tables == nil || len(out.Tables) != 0 || out.Truncated {
+		t.Errorf("empty database should return [] not truncated, got %v truncated=%v", out.Tables, out.Truncated)
 	}
 }
 
@@ -194,10 +210,19 @@ func TestListTables_IncludeColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listTables include_columns: %v", err)
 	}
-	for _, tbl := range out.Tables {
-		if len(tbl.Columns) == 0 {
-			t.Errorf("include_columns should fold schema for %q, got none", tbl.Name)
+	var orders *tableInfo
+	for i := range out.Tables {
+		if out.Tables[i].Name == "orders" {
+			orders = &out.Tables[i]
 		}
+		if len(out.Tables[i].Columns) == 0 {
+			t.Errorf("include_columns should fold schema for %q, got none", out.Tables[i].Name)
+		}
+	}
+	// Assert the actual folded schema, not just that some columns exist.
+	if orders == nil || len(orders.Columns) != 2 ||
+		orders.Columns[0].Name != "id" || orders.Columns[0].Type != "UInt64" {
+		t.Errorf("orders should fold to {id UInt64, amount Decimal}, got %+v", orders)
 	}
 }
 
@@ -220,12 +245,5 @@ func TestListTables_IncludeColumnsTighterDefault(t *testing.T) {
 	_, lean, _ := listTables(ctx, conn, listTablesArgs{Database: "system"})
 	if len(lean.Tables) <= DefaultFoldedTableLimit {
 		t.Errorf("lean listing should not be clamped to the folded limit, got %d", len(lean.Tables))
-	}
-}
-
-func TestListTables_RequiresDatabase(t *testing.T) {
-	conn := testsupport.Start(t)
-	if _, _, err := listTables(context.Background(), conn, listTablesArgs{}); err == nil {
-		t.Fatal("expected error when database is empty")
 	}
 }
