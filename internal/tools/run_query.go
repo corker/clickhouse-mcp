@@ -54,8 +54,7 @@ func runQuery(ctx context.Context, conn driver.Conn, args runQueryArgs) (*mcp.Ca
 func execBounded(ctx context.Context, conn driver.Conn, sql string, class query.StmtClass, displayLimit int) (query.Result, error) {
 	bounded := query.Bound(sql, class, displayLimit+1)
 
-	qctx := chdriver.ReadOnlyCappedContext(ctx,
-		chdriver.DefaultMaxResultRows, chdriver.DefaultMaxResultBytes, chdriver.DefaultMaxExecSeconds)
+	qctx := chdriver.DefaultReadContext(ctx)
 
 	rows, err := conn.Query(qctx, bounded)
 	if err != nil {

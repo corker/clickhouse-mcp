@@ -52,8 +52,7 @@ func listTables(ctx context.Context, conn driver.Conn, args listTablesArgs) (*mc
 	if args.Database == "" {
 		return nil, listTablesOutput{}, fmt.Errorf("database is required (call list_databases to see the options)")
 	}
-	qctx := chdriver.ReadOnlyCappedContext(ctx,
-		chdriver.DefaultMaxResultRows, chdriver.DefaultMaxResultBytes, chdriver.DefaultMaxExecSeconds)
+	qctx := chdriver.DefaultReadContext(ctx)
 
 	tables, err := leanTables(qctx, conn, args.Database, args.Table)
 	if err != nil {
@@ -77,8 +76,10 @@ func listTables(ctx context.Context, conn driver.Conn, args listTablesArgs) (*mc
 }
 
 func leanTables(ctx context.Context, conn driver.Conn, database, table string) ([]tableInfo, error) {
-	sql := "SELECT name, engine, total_rows, comment FROM system.tables WHERE database = ?"
-	qargs := []any{database}
+	// Filter the write-probe's sentinel table defensively — WriteProbe drops it,
+	// but this guarantees it never surfaces even if a drop failed.
+	sql := "SELECT name, engine, total_rows, comment FROM system.tables WHERE database = ? AND name != ?"
+	qargs := []any{database, chdriver.ProbeTable}
 	if table != "" {
 		sql += " AND name = ?"
 		qargs = append(qargs, table)
@@ -91,7 +92,7 @@ func leanTables(ctx context.Context, conn driver.Conn, database, table string) (
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []tableInfo
+	out := []tableInfo{}
 	for rows.Next() {
 		var t tableInfo
 		if err := rows.Scan(&t.Name, &t.Engine, &t.RowCount, &t.Comment); err != nil {

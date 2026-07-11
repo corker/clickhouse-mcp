@@ -27,8 +27,7 @@ func RegisterListDatabases(server *mcp.Server, conn driver.Conn) {
 }
 
 func listDatabases(ctx context.Context, conn driver.Conn) (*mcp.CallToolResult, listDatabasesOutput, error) {
-	qctx := chdriver.ReadOnlyCappedContext(ctx,
-		chdriver.DefaultMaxResultRows, chdriver.DefaultMaxResultBytes, chdriver.DefaultMaxExecSeconds)
+	qctx := chdriver.DefaultReadContext(ctx)
 
 	rows, err := conn.Query(qctx, "SELECT name FROM system.databases ORDER BY name")
 	if err != nil {
