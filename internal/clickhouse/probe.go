@@ -28,6 +28,9 @@ func WriteProbe(ctx context.Context, conn driver.Conn) (guardHolds bool, err err
 	if err := conn.Exec(ctx, create); err != nil {
 		return false, fmt.Errorf("write-probe setup: %w", err)
 	}
+	// Drop it afterward so it does not clutter list_tables. Best-effort, and via
+	// the unrestricted context since DROP is refused under readonly.
+	defer func() { _ = conn.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", probeTable)) }()
 
 	insertErr := conn.Exec(ReadOnlyContext(ctx), fmt.Sprintf("INSERT INTO %s VALUES (1)", probeTable))
 	switch {

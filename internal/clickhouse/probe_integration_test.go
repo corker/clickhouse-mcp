@@ -25,6 +25,25 @@ func TestWriteProbe_GuardHolds(t *testing.T) {
 	}
 }
 
+// The probe must clean up its table so it does not clutter list_tables.
+func TestWriteProbe_LeavesNoTable(t *testing.T) {
+	conn := testsupport.Start(t)
+	ctx := context.Background()
+
+	if _, err := chdriver.WriteProbe(ctx, conn); err != nil {
+		t.Fatalf("write-probe: %v", err)
+	}
+	var count uint64
+	err := conn.QueryRow(ctx,
+		"SELECT count() FROM system.tables WHERE name = '__clickhouse_mcp_write_probe__'").Scan(&count)
+	if err != nil {
+		t.Fatalf("count probe table: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("probe table should be dropped after probing, found %d", count)
+	}
+}
+
 // readonly=2 blocks an INSERT (the security boundary) but the ReadOnlyCapped
 // context still allows the SELECT + caps (readonly=1 would forbid the settings).
 func TestReadOnlyContext_BlocksWrite_AllowsRead(t *testing.T) {
