@@ -30,10 +30,8 @@ var (
 	sharedErr  error
 )
 
-// Start returns a connection to the shared container (booted once per test
-// binary). Do not create fixtures in the default database here — use Database for
-// an isolated one. Built via the project's own clickhouse.New so tests exercise
-// the real connection path.
+// Start does not isolate: fixtures created here land in the shared default
+// database and leak across tests — use Database for an isolated one.
 func Start(t *testing.T) driver.Conn {
 	t.Helper()
 	once.Do(func() { sharedConn, sharedErr = boot() })
@@ -43,9 +41,8 @@ func Start(t *testing.T) driver.Conn {
 	return sharedConn
 }
 
-// Database boots the shared container and creates a fresh database named after
-// the test (sanitized), dropped on cleanup. Use its name to qualify fixtures so
-// tests never collide on the shared container.
+// Database returns a per-test database (dropped on cleanup) whose name qualifies
+// fixtures so tests never collide on the shared container.
 func Database(t *testing.T) (conn driver.Conn, database string) {
 	t.Helper()
 	conn = Start(t)
