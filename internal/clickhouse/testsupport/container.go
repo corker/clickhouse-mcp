@@ -62,7 +62,9 @@ func Database(t *testing.T) (conn driver.Conn, database string) {
 }
 
 // sanitize turns a test name into a valid ClickHouse identifier (letters, digits,
-// underscore); subtests carry a "/" which becomes "_".
+// underscore); subtests carry a "/" which becomes "_". Note: names differing only
+// by a separator collapse to the same database (e.g. "TestA/b" and "TestA_b"), so
+// keep Database-using test names distinct beyond their separators.
 func sanitize(name string) string {
 	var b strings.Builder
 	for _, r := range name {
