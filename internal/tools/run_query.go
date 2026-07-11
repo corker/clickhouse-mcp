@@ -12,7 +12,6 @@ import (
 	"github.com/corker/clickhouse-mcp/internal/query"
 )
 
-// DefaultRowLimit is the display limit applied when the caller omits Limit.
 const DefaultRowLimit = 100
 
 type runQueryArgs struct {
@@ -20,8 +19,6 @@ type runQueryArgs struct {
 	Limit int    `json:"limit,omitempty" jsonschema:"max rows to return; defaults to 100"`
 }
 
-// RegisterRunQuery registers the run_query tool: a guarded, read-only query
-// executor returning typed structured output with explicit truncation.
 func RegisterRunQuery(server *mcp.Server, conn driver.Conn) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "run_query",
@@ -51,11 +48,9 @@ func runQuery(ctx context.Context, conn driver.Conn, args runQueryArgs) (*mcp.Ca
 	return nil, result, err
 }
 
-// execBounded runs an already-classified read query through the guarded path and
-// shapes the result — the reusable core a caller invokes with its own trusted SQL
-// and statement class, without re-classifying or duplicating the scan loop.
-// SELECT/WITH are wrapped with LIMIT displayLimit+1 to detect truncation; small
-// statements run as-is under the cap backstop.
+// execBounded is the reusable guarded path: a caller passes trusted SQL and its
+// already-decided class. SELECT/WITH are wrapped with LIMIT displayLimit+1 to
+// detect truncation; small statements run as-is under the cap backstop.
 func execBounded(ctx context.Context, conn driver.Conn, sql string, class query.StmtClass, displayLimit int) (query.Result, error) {
 	bounded := query.Bound(sql, class, displayLimit+1)
 
@@ -75,10 +70,8 @@ func execBounded(ctx context.Context, conn driver.Conn, sql string, class query.
 	return query.Shape(columns, fetched, displayLimit, query.HasTopLevelOrderBy(sql)), nil
 }
 
-// scanRows materializes all rows into JSON-safe positional values. The driver
-// rejects Scan into *interface{}, so a typed destination is allocated per column
-// from ColumnTypes().ScanType(), then each scanned value is routed through
-// query.ToJSONValue.
+// scanRows materializes all rows. The driver rejects Scan into *interface{}, so a
+// typed destination is allocated per column from ColumnTypes().ScanType().
 func scanRows(rows driver.Rows) (columns []string, fetched [][]any, err error) {
 	columns = rows.Columns()
 	cts := rows.ColumnTypes()

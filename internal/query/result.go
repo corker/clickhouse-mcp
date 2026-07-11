@@ -18,10 +18,9 @@ const (
 	ClassSmall
 )
 
-// Classify returns the statement class from the leading keyword. It is a light
-// UX gate that produces a clear "read-only only" rejection; it is NOT the
-// security boundary (readonly=2 is). Verified: SELECT/WITH accept the subquery
-// wrap; SHOW/DESCRIBE/EXPLAIN/EXISTS do not and need no bounding.
+// Classify is a light UX gate, NOT the security boundary (readonly=2 is).
+// Verified: SELECT/WITH accept the subquery wrap; the ClassSmall statements do
+// not and need no bounding.
 func Classify(sql string) StmtClass {
 	head := leadingKeyword(sql)
 	switch head {
@@ -118,10 +117,8 @@ func leadingKeyword(sql string) string {
 	return strings.ToUpper(s[:i])
 }
 
-// Bound produces the SQL to execute so that at most fetchLimit (= displayLimit+1)
-// rows come back, per the verified per-class rule. For SELECT/WITH it strips a
-// trailing semicolon and wraps as SELECT * FROM (<sql>\n) LIMIT fetchLimit. For
-// small statements it returns them unchanged (the throw-mode cap is the backstop).
+// Bound wraps SELECT/WITH to cap the row count; small statements pass through
+// (the throw-mode cap is their backstop).
 //
 // The newline before the closing paren is load-bearing: if the inner query ends
 // in a trailing "-- comment", putting ") LIMIT n" on its own line stops the
@@ -136,8 +133,6 @@ func Bound(sql string, class StmtClass, fetchLimit int) string {
 	}
 }
 
-// Result holds the shaped output of a query: columns once, positional rows, and
-// machine-readable truncation signals for the calling agent.
 type Result struct {
 	Columns   []string `json:"columns" jsonschema:"column names, aligned to each row"`
 	Rows      [][]any  `json:"rows" jsonschema:"result rows as positional arrays aligned to columns; large integers and decimals are strings to avoid precision loss"`
@@ -147,10 +142,8 @@ type Result struct {
 	Note      string   `json:"note,omitempty" jsonschema:"guidance when truncated or when rows are an arbitrary subset"`
 }
 
-// Shape turns the fetched rows (which may contain up to displayLimit+1) into a
-// Result, dropping the sentinel row and reporting truncation. ordered indicates
-// whether the query had a top-level ORDER BY; if not and the result was
-// truncated, the subset is arbitrary and the note says so.
+// Shape drops the sentinel (displayLimit+1) row and reports truncation. When a
+// truncated result was not ordered, the subset is arbitrary and the note says so.
 func Shape(columns []string, fetched [][]any, displayLimit int, ordered bool) Result {
 	truncated := len(fetched) > displayLimit
 	rows := fetched
@@ -173,8 +166,8 @@ func Shape(columns []string, fetched [][]any, displayLimit int, ordered bool) Re
 	return r
 }
 
-// HasTopLevelOrderBy is a cheap check (not a SQL parse) for whether the outer
-// query orders its results, used only to phrase the truncation note.
+// HasTopLevelOrderBy is a cheap substring check (not a SQL parse), used only to
+// phrase the truncation note.
 func HasTopLevelOrderBy(sql string) bool {
 	return strings.Contains(strings.ToUpper(sql), "ORDER BY")
 }

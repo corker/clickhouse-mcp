@@ -15,17 +15,10 @@ import (
 // ToJSONValue converts a value scanned from the ClickHouse driver into a
 // JSON-safe representation.
 //
-// Large and exact numeric types are rendered as strings because a JSON number
-// cannot hold them without precision loss: UInt64 and Int128/256 exceed 2^53,
-// and Decimal must keep its exact scale. Times become RFC3339 strings.
-//
-// The driver's scan types are an open universe (Nullable(T) is a pointer, arrays
-// are typed slices, Map/Tuple are maps/slices), so after the known scalar cases
-// the function recurses reflectively: pointers are dereferenced (nil -> JSON
-// null), and slices/arrays and maps are converted element-wise. This applies the
-// numeric-string contract to array/map elements too — e.g. Array(UInt64) becomes
-// an array of strings, not lossy JSON numbers. A []byte from Array(U?Int8) stays
-// a numeric array (the default JSON encoder would base64-encode it).
+// Large and exact numerics are rendered as strings because a JSON number cannot
+// hold them losslessly: UInt64/Int128/256 exceed 2^53 and Decimal must keep its
+// scale. The contract applies recursively (via reflectValue), so the elements of
+// Array(UInt64), Nullable, Map, and Variant/JSON get it too.
 func ToJSONValue(v any) any {
 	switch x := v.(type) {
 	case nil:
@@ -62,10 +55,6 @@ func ToJSONValue(v any) any {
 	}
 }
 
-// reflectValue applies the JSON contract to types not matched by the scalar
-// cases above: pointers (Nullable columns), slices/arrays (Array columns), and
-// maps (Map columns). Each element is routed back through ToJSONValue so the
-// numeric-string and time rules apply recursively.
 func reflectValue(rv reflect.Value) any {
 	switch rv.Kind() {
 	case reflect.Pointer:

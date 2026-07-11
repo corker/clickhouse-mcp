@@ -13,11 +13,9 @@ import (
 	"github.com/corker/clickhouse-mcp/internal/tools"
 )
 
-// New builds the MCP server and registers its tools. It runs the read-only
-// write-probe: run_query is served only when the guard is verified to hold
-// (fail-closed) — the inspection tools and ping are always served. cfg is
-// threaded in so tool registration can be gated on configuration (e.g. the
-// future write path via cfg.AllowWriteAccess).
+// New runs the write-probe: run_query is served only when the guard is verified
+// to hold (fail-closed); ping is always served. cfg is threaded in so future
+// tools can be gated on configuration (e.g. the write path via AllowWriteAccess).
 func New(ctx context.Context, name string, cfg *config.Config, conn driver.Conn) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: name}, nil)
 	tools.RegisterPing(s, conn)
