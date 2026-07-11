@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -58,6 +59,46 @@ func TestRunQuery_Types(t *testing.T) {
 	}
 	if row[2] != nil {
 		t.Errorf("Nullable NULL should be nil, got %#v", row[2])
+	}
+}
+
+// The serializer's unit tests hand-build Go values (time.Time, uuid.UUID,
+// net.IP, []byte), assuming the driver scans each type into that Go shape. This
+// runs the same types through a real driver and asserts the rendered JSON, so a
+// scan-shape assumption that is wrong fails here rather than shipping (ADR-0005).
+func TestRunQuery_TypeRendering_LiveDriver(t *testing.T) {
+	conn := testsupport.Start(t)
+	_, res, err := runQuery(context.Background(), conn, runQueryArgs{
+		SQL: `SELECT
+			toDate('2026-07-12') AS d,
+			toDate32('2026-07-12') AS d32,
+			CAST('d592e5b1-7b76-42b0-8663-2b3197fbfc40' AS UUID) AS id,
+			toIPv4('1.2.3.4') AS ip4,
+			toIPv6('2001:db8::1') AS ip6,
+			CAST([1,2,3] AS Array(UInt8)) AS bytes,
+			map(toDate('2026-07-12'), toUInt64(1)) AS m`,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	row := res.Rows[0]
+	checks := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"Date -> calendar date", row[0], "2026-07-12"},
+		{"Date32 -> calendar date", row[1], "2026-07-12"},
+		{"UUID -> canonical string", row[2], "d592e5b1-7b76-42b0-8663-2b3197fbfc40"},
+		{"IPv4 -> dotted string", row[3], "1.2.3.4"},
+		{"IPv6 -> colon string", row[4], "2001:db8::1"},
+		{"Array(UInt8) -> number array", row[5], []any{1, 2, 3}},
+		{"Map(Date, UInt64) -> date-keyed", row[6], map[string]any{"2026-07-12": "1"}},
+	}
+	for _, c := range checks {
+		if !reflect.DeepEqual(c.got, c.want) {
+			t.Errorf("%s: got %#v, want %#v", c.name, c.got, c.want)
+		}
 	}
 }
 

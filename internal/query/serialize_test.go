@@ -1,6 +1,7 @@
 package query
 
 import (
+	"encoding/json"
 	"math"
 	"math/big"
 	"net"
@@ -14,6 +15,94 @@ import (
 )
 
 func ptr[T any](v T) *T { return &v }
+
+func TestIsDateOnly(t *testing.T) {
+	// Exercises the unwrap loop directly: it must iterate through nested wrappers
+	// to a leaf, return true only for a Date/Date32 leaf, and always terminate.
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"Date", true},
+		{"Date32", true},
+		{"DateTime", false},
+		{"DateTime64(3)", false},
+		{"Nullable(Date)", true},
+		{"LowCardinality(Nullable(Date))", true}, // two hops
+		{"SimpleAggregateFunction(anyLast, Date)", true},
+		{"SimpleAggregateFunction(sum, UInt64)", false}, // wrapper, non-date leaf
+		{"SimpleAggregateFunction(anyLast, DateTime)", false},
+		{"Array(Date)", true},
+		{"Array(Array(Date))", true}, // deep, must terminate
+		{"SomeFutureWrapper(Date)", true},
+		{"", false},
+		{"Map(String, Date)", false}, // multi-arg, not a wrapper
+	}
+	for _, tt := range tests {
+		if got := isDateOnly(tt.in); got != tt.want {
+			t.Errorf("isDateOnly(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestFieldType(t *testing.T) {
+	// The "(" guard distinguishes a named field ("d Date") from an unnamed field
+	// whose type contains a space inside parens ("Decimal(10, 2)").
+	tests := []struct{ in, want string }{
+		{"d Date", "Date"},                                       // named leaf
+		{"x Decimal(10, 2)", "Decimal(10, 2)"},                   // named, type keeps its inner space
+		{"Decimal(10, 2)", "Decimal(10, 2)"},                     // unnamed: space is inside parens, keep whole
+		{"Enum8('a' = 1)", "Enum8('a' = 1)"},                     // unnamed: spaces inside parens
+		{"e Enum8('a' = 1, 'b' = 2)", "Enum8('a' = 1, 'b' = 2)"}, // named enum
+		{"UInt8", "UInt8"},                                       // unnamed leaf
+	}
+	for _, tt := range tests {
+		if got := fieldType(tt.in); got != tt.want {
+			t.Errorf("fieldType(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestMapKeyString(t *testing.T) {
+	date := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	tm := time.Date(2026, 7, 12, 9, 0, 0, 0, time.UTC)
+	tests := []struct {
+		k       any
+		keyType string
+		want    string
+	}{
+		{date, "Date", "2026-07-12"},             // Date key renders calendar date
+		{tm, "DateTime", "2026-07-12T09:00:00Z"}, // DateTime key keeps time
+		{"plain", "String", "plain"},             // string key via fmt fallback
+		{uint64(42), "UInt64", "42"},             // numeric key via fmt fallback
+	}
+	for _, tt := range tests {
+		if got := mapKeyString(tt.k, tt.keyType); got != tt.want {
+			t.Errorf("mapKeyString(%v, %q) = %q, want %q", tt.k, tt.keyType, got, tt.want)
+		}
+	}
+}
+
+// Inf/NaN must render as null so the WHOLE result still marshals — a raw
+// non-finite float makes json.Marshal error and fails the entire response.
+func TestInfNaN_ResultStillMarshals(t *testing.T) {
+	// The raw input is what would break marshaling.
+	if _, err := json.Marshal(math.Inf(1)); err == nil {
+		t.Fatal("precondition: json.Marshal(+Inf) should error")
+	}
+	// The rendered value marshals cleanly to null.
+	for _, in := range []float64{math.Inf(1), math.Inf(-1), math.NaN()} {
+		b, err := json.Marshal(ToJSONValue(in, "Float64"))
+		if err != nil || string(b) != "null" {
+			t.Errorf("marshal(ToJSONValue(%v)) = %q, err=%v; want \"null\", nil", in, b, err)
+		}
+	}
+	// A whole result row containing an Inf marshals rather than failing.
+	row := []any{ToJSONValue(1.5, "Float64"), ToJSONValue(math.Inf(1), "Float64")}
+	if b, err := json.Marshal(row); err != nil || string(b) != "[1.5,null]" {
+		t.Errorf("marshal(row with Inf) = %q, err=%v; want [1.5,null]", b, err)
+	}
+}
 
 func TestSplitTopLevel(t *testing.T) {
 	tests := []struct {
