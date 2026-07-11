@@ -9,10 +9,14 @@ self-hosted) — no sidecar, no custom ClickHouse build required.
 
 ## What's there today
 
-- `ping` tool — issues `SELECT 1` against the configured ClickHouse to verify the connection.
+- `ping` — issues `SELECT 1` to verify the connection.
+- `run_query` — runs a read-only query (SELECT/WITH/SHOW/DESCRIBE/EXPLAIN/EXISTS only) and
+  returns typed rows with explicit truncation. Enforced read-only via ClickHouse `readonly=2`,
+  verified at startup by a write-probe (served only if the guard holds). Large integers and
+  decimals are returned as strings to avoid JSON precision loss.
 
-That's it. This is a scaffolding baseline; read-only inspection tools
-(`list_databases`, `list_tables`, `describe_table`, `run_query`) land next.
+The read-only inspection tools (`list_databases`, `list_tables`) land next as thin callers of
+`run_query`'s guarded path.
 
 ## Roadmap
 
