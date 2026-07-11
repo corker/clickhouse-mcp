@@ -5,24 +5,39 @@ Model Context Protocol server for ClickHouse, written in Go.
 Single binary. Works with any ClickHouse deployment (OSS, ClickHouse Cloud,
 self-hosted) — no sidecar, no custom ClickHouse build required.
 
-**Status: v0.1 pre-release. Read-only, stdio transport only.**
+**Status: v0.1 pre-release. stdio transport only.**
 
 ## What's there today
 
 - `ping` — issues `SELECT 1` to verify the connection.
-- `run_query` — runs a read-only query (SELECT/WITH/SHOW/DESCRIBE/EXPLAIN/EXISTS only) and
-  returns typed rows with explicit truncation. Enforced read-only via ClickHouse `readonly=2`,
-  verified at startup by a write-probe (served only if the guard holds). Large integers and
-  decimals are returned as strings to avoid JSON precision loss.
+- `list_databases` / `list_tables` — inspect the schema (databases, tables, engines, row counts,
+  columns), with explicit truncation so a large server can't flood the caller's context.
+- `run_query` — runs a single row-returning query (SELECT/WITH/SHOW/DESCRIBE/EXPLAIN/EXISTS) and
+  returns typed rows plus each column's type, with `LIMIT n+1` truncation detection. Large integers
+  and decimals are returned as strings to avoid JSON precision loss.
+- `run_statement` — executes a single statement that does not return rows (INSERT, ALTER, CREATE,
+  DROP, …) and reports rows written. **Only usable if the connected ClickHouse user has the
+  privilege** — see Security.
 
-The read-only inspection tools (`list_databases`, `list_tables`) land next as thin callers of
-`run_query`'s guarded path.
+## Security — authorization is ClickHouse's, not the server's
+
+This server does **not** decide what you may run. Every statement is executed against ClickHouse
+under the user you configure, and **that user's privileges are the only authorization boundary**
+(see [ADR-0006](docs/adr/0006-clickhouse-rbac-is-the-authorization-boundary.md)).
+
+- **For a read-only deployment, point the server at a `GRANT SELECT`-only ClickHouse user.** Then
+  `run_statement` writes are refused by ClickHouse, verifiably, regardless of what SQL is sent.
+- Pointing it at a full-privilege user (e.g. an unrestricted `default`) means **the tools can
+  write** — by design. There is no server-side read-only switch; a ClickHouse-setting guard such as
+  `readonly=2` is *not* a boundary (an in-query `SETTINGS readonly=0` overrides it — verified). Use
+  a privilege grant.
 
 ## Roadmap
 
-- **v0.1** — read-only tools over stdio: `list_databases`, `list_tables`, `describe_table`, `run_query` (SELECT/SHOW/DESCRIBE/EXISTS/EXPLAIN/WITH only), server-side row + byte caps with truncation reason.
+- **v0.1** — stdio tools: `list_databases`, `list_tables`, `run_query`, `run_statement`; row + byte
+  caps with truncation reason. Authorization delegated to ClickHouse RBAC.
 - **v0.2** — HTTP transport, OAuth 2.0 with S256 PKCE, multi-provider IdP brokering (Google, Microsoft Entra ID, Keycloak, generic OIDC).
-- **later** — write access gated by `CLICKHOUSE_ALLOW_WRITE_ACCESS`, DDL by `CLICKHOUSE_ALLOW_DROP`, DBA operational tools (`system.mutations`, `system.parts`, `system.replication_queue` rollups).
+- **later** — DBA operational tools (`system.mutations`, `system.parts`, `system.replication_queue` rollups).
 
 ## Install
 

@@ -41,8 +41,9 @@ No `pkg/`. This is a binary, not a library.
 1. Create `internal/tools/<name>.go` with a `Register<Name>(server, conn)` function.
 2. Follow the `ping.go` pattern: typed args struct + `mcp.AddTool` closure.
 3. Wire it in `internal/server/server.go`.
-4. Keep tools read-only unless `CLICKHOUSE_ALLOW_WRITE_ACCESS=true` (write path
-   not implemented yet — leave TODO markers, not stubs).
+4. Do not gate tools on intent or a write flag — ClickHouse RBAC is the authorization
+   boundary (ADR-0006). Row-returning tools use `conn.Query`; write/DDL tools use
+   `conn.Exec`. If the connected user lacks the privilege, ClickHouse returns the error.
 
 ## MCP SDK notes
 
