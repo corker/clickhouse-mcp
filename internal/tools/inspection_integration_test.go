@@ -99,6 +99,32 @@ func TestListTables_NotFound(t *testing.T) {
 	}
 }
 
+// A missing (or wrong-case) database errors clearly, but a real-but-empty
+// database returns an empty list without error — the two must be distinguished.
+func TestListTables_MissingVsEmptyDatabase(t *testing.T) {
+	conn := testsupport.Start(t)
+	ctx := context.Background()
+
+	if _, _, err := listTables(ctx, conn, listTablesArgs{Database: "does_not_exist"}); err == nil {
+		t.Error("missing database should error, not return empty")
+	}
+	// ClickHouse names are case-sensitive: DEFAULT != default.
+	if _, _, err := listTables(ctx, conn, listTablesArgs{Database: "DEFAULT"}); err == nil {
+		t.Error("wrong-case database should error (case-sensitive)")
+	}
+
+	if err := conn.Exec(ctx, "CREATE DATABASE IF NOT EXISTS empty_db"); err != nil {
+		t.Fatalf("create empty_db: %v", err)
+	}
+	_, out, err := listTables(ctx, conn, listTablesArgs{Database: "empty_db"})
+	if err != nil {
+		t.Errorf("existing-but-empty database should not error, got: %v", err)
+	}
+	if out.Tables == nil || len(out.Tables) != 0 {
+		t.Errorf("empty database should return [], got %v", out.Tables)
+	}
+}
+
 func TestListTables_IncludeColumns(t *testing.T) {
 	conn := testsupport.Start(t)
 	seedInspectionFixture(t, conn)

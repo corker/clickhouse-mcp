@@ -40,9 +40,10 @@ type listTablesOutput struct {
 func RegisterListTables(server *mcp.Server, conn driver.Conn) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "list_tables",
-		Description: "List a database's tables (name, engine, row count). Pass table= " +
-			"for one table's full column schema, or include_columns=true to fold " +
-			"schema for every table (small databases only).",
+		Description: "List a database's tables (name, engine, row count). Database " +
+			"and table names are case-sensitive. Pass table= for one table's full " +
+			"column schema, or include_columns=true to fold schema for every table " +
+			"(small databases only).",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args listTablesArgs) (*mcp.CallToolResult, listTablesOutput, error) {
 		return listTables(ctx, conn, args)
 	})
@@ -58,9 +59,20 @@ func listTables(ctx context.Context, conn driver.Conn, args listTablesArgs) (*mc
 	if err != nil {
 		return nil, listTablesOutput{}, err
 	}
-	// table= addresses one table; a miss is a clear not-found, not an empty list.
-	if args.Table != "" && len(tables) == 0 {
-		return nil, listTablesOutput{}, fmt.Errorf("table %q not found in database %q", args.Table, args.Database)
+	// An empty result is ambiguous — the database may not exist (a common cause is
+	// a case-mismatched name, since ClickHouse names are case-sensitive). Only when
+	// empty, pay one small query to tell the caller which it is.
+	if len(tables) == 0 {
+		exists, err := databaseExists(qctx, conn, args.Database)
+		if err != nil {
+			return nil, listTablesOutput{}, err
+		}
+		if !exists {
+			return nil, listTablesOutput{}, fmt.Errorf("database %q not found (names are case-sensitive; call list_databases to see the options)", args.Database)
+		}
+		if args.Table != "" {
+			return nil, listTablesOutput{}, fmt.Errorf("table %q not found in database %q", args.Table, args.Database)
+		}
 	}
 
 	if args.Table != "" || args.Columns {
@@ -73,6 +85,14 @@ func listTables(ctx context.Context, conn driver.Conn, args listTablesArgs) (*mc
 		}
 	}
 	return nil, listTablesOutput{Database: args.Database, Tables: tables}, nil
+}
+
+func databaseExists(ctx context.Context, conn driver.Conn, database string) (bool, error) {
+	var n uint64
+	if err := conn.QueryRow(ctx, "SELECT count() FROM system.databases WHERE name = ?", database).Scan(&n); err != nil {
+		return false, fmt.Errorf("check database %q: %w", database, err)
+	}
+	return n > 0, nil
 }
 
 func leanTables(ctx context.Context, conn driver.Conn, database, table string) ([]tableInfo, error) {
