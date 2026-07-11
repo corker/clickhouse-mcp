@@ -121,13 +121,17 @@ func leadingKeyword(sql string) string {
 
 // Bound produces the SQL to execute so that at most fetchLimit (= displayLimit+1)
 // rows come back, per the verified per-class rule. For SELECT/WITH it strips a
-// trailing semicolon and wraps as SELECT * FROM (<sql>) LIMIT fetchLimit. For
+// trailing semicolon and wraps as SELECT * FROM (<sql>\n) LIMIT fetchLimit. For
 // small statements it returns them unchanged (the throw-mode cap is the backstop).
+//
+// The newline before the closing paren is load-bearing: if the inner query ends
+// in a trailing "-- comment", putting ") LIMIT n" on its own line stops the
+// comment from swallowing it (which would leave an unmatched paren).
 func Bound(sql string, class StmtClass, fetchLimit int) string {
 	switch class {
 	case ClassSelect:
 		inner := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(sql), "; "))
-		return "SELECT * FROM (" + inner + ") LIMIT " + strconv.Itoa(fetchLimit)
+		return "SELECT * FROM (" + inner + "\n) LIMIT " + strconv.Itoa(fetchLimit)
 	default:
 		return sql
 	}

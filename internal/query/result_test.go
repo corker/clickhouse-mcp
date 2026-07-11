@@ -63,9 +63,10 @@ func TestBound(t *testing.T) {
 		class StmtClass
 		want  string
 	}{
-		{"select wraps", "SELECT n FROM t", ClassSelect, "SELECT * FROM (SELECT n FROM t) LIMIT 6"},
-		{"select strips trailing semicolon", "SELECT 1;", ClassSelect, "SELECT * FROM (SELECT 1) LIMIT 6"},
-		{"select strips trailing space+semicolon", "SELECT 1 ; ", ClassSelect, "SELECT * FROM (SELECT 1) LIMIT 6"},
+		{"select wraps", "SELECT n FROM t", ClassSelect, "SELECT * FROM (SELECT n FROM t\n) LIMIT 6"},
+		{"select strips trailing semicolon", "SELECT 1;", ClassSelect, "SELECT * FROM (SELECT 1\n) LIMIT 6"},
+		{"select strips trailing space+semicolon", "SELECT 1 ; ", ClassSelect, "SELECT * FROM (SELECT 1\n) LIMIT 6"},
+		{"trailing line comment: paren on own line", "SELECT 1 -- c", ClassSelect, "SELECT * FROM (SELECT 1 -- c\n) LIMIT 6"},
 		{"small unchanged", "SHOW DATABASES", ClassSmall, "SHOW DATABASES"},
 		{"describe unchanged", "DESCRIBE t", ClassSmall, "DESCRIBE t"},
 	}
