@@ -1,3 +1,4 @@
+// Package tools implements the MCP tools exposed by the server.
 package tools
 
 import (
@@ -10,6 +11,7 @@ import (
 
 type pingArgs struct{}
 
+// RegisterPing registers the ping tool, which verifies the ClickHouse connection.
 func RegisterPing(server *mcp.Server, conn driver.Conn) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ping",

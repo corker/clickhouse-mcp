@@ -1,3 +1,4 @@
+// Command clickhouse-mcp is a Model Context Protocol server for ClickHouse.
 package main
 
 import (
@@ -27,7 +28,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("clickhouse: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	s := server.New("clickhouse-mcp", conn)
 	if err := s.Run(ctx, &mcp.StdioTransport{}); err != nil {

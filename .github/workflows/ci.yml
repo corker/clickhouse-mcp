@@ -32,4 +32,8 @@ jobs:
           go-version: "1.26"
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          # Pin an explicit v2 build: the action's "latest" resolves to a stale
+          # v1 binary (v1.64.8, built with Go 1.24) that both fails on go.mod's
+          # 1.25 target and cannot read the v2 .golangci.yml. v2.12.2 is built
+          # with Go 1.25 and reads the v2 config format.
+          version: v2.12.2
