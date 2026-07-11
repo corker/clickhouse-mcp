@@ -28,7 +28,10 @@ const ProbeTable = "__clickhouse_mcp_write_probe__"
 // error means the probe itself could not run (e.g. cannot create the probe
 // table); the caller should also treat that as "do not serve run_query".
 func WriteProbe(ctx context.Context, conn driver.Conn, database string) (guardHolds bool, err error) {
-	table := fmt.Sprintf("%s.%s", database, ProbeTable)
+	// Backtick-quote the database identifier (from config, not user input) so a
+	// name with spaces/dots is parsed as one identifier rather than mangling the
+	// DDL; embedded backticks are doubled per ClickHouse's escaping.
+	table := fmt.Sprintf("`%s`.%s", strings.ReplaceAll(database, "`", "``"), ProbeTable)
 
 	// Create the probe table outside readonly so the INSERT has a target.
 	if err := conn.Exec(ctx, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (x UInt8) ENGINE=Memory", table)); err != nil {

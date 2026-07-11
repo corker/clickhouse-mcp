@@ -43,6 +43,24 @@ func TestWriteProbe_LeavesNoTable(t *testing.T) {
 	}
 }
 
+// A database name that needs quoting (spaces/dots) must not mangle the probe DDL.
+func TestWriteProbe_ExoticDatabaseName(t *testing.T) {
+	conn := testsupport.Start(t)
+	ctx := context.Background()
+	if err := conn.Exec(ctx, "CREATE DATABASE IF NOT EXISTS `weird db.name`"); err != nil {
+		t.Fatalf("create db: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Exec(context.Background(), "DROP DATABASE IF EXISTS `weird db.name`") })
+
+	holds, err := chdriver.WriteProbe(ctx, conn, "weird db.name")
+	if err != nil {
+		t.Fatalf("probe on a quoted-name database failed: %v", err)
+	}
+	if !holds {
+		t.Fatal("guard should hold")
+	}
+}
+
 // readonly=2 blocks an INSERT (the security boundary) but the ReadOnlyCapped
 // context still allows the SELECT + caps (readonly=1 would forbid the settings).
 func TestReadOnlyContext_BlocksWrite_AllowsRead(t *testing.T) {
