@@ -98,7 +98,7 @@ func scanRows(rows driver.Rows) (columns, columnTypes []string, fetched [][]any,
 		}
 		row := make([]any, len(cts))
 		for i := range cts {
-			row[i] = query.ToJSONValue(reflect.ValueOf(dest[i]).Elem().Interface())
+			row[i] = query.ToJSONValue(reflect.ValueOf(dest[i]).Elem().Interface(), columnTypes[i])
 		}
 		fetched = append(fetched, row)
 	}
