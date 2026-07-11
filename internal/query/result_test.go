@@ -45,6 +45,14 @@ func TestIsRowReturning(t *testing.T) {
 		{"DROP TABLE t", false},
 		{"ALTER TABLE t ADD COLUMN y UInt8", false},
 		{"", false},
+		// Parenthesized queries are valid and row-returning — the gate must see
+		// through the leading paren, or run_query rejects them and run_statement
+		// silently swallows them.
+		{"(SELECT 1)", true},
+		{"( SELECT 1 )", true},
+		{"((SELECT 1))", true},
+		{"(SELECT 1) UNION ALL (SELECT 2)", true},
+		{"(INSERT INTO t VALUES (1))", false},
 	}
 	for _, tt := range tests {
 		if got := IsRowReturning(tt.sql); got != tt.want {

@@ -77,7 +77,9 @@ func isIdentByte(b byte) bool {
 }
 
 // leadingKeyword returns the upper-cased first token, skipping leading
-// whitespace and a leading line/block comment.
+// whitespace, line/block comments, and opening parens. The paren skip matters
+// because "(SELECT 1)" and "(SELECT 1) UNION ALL (SELECT 2)" are valid
+// row-returning queries whose keyword would otherwise read as empty.
 func leadingKeyword(sql string) string {
 	s := strings.TrimSpace(sql)
 	for {
@@ -94,6 +96,9 @@ func leadingKeyword(sql string) string {
 				continue
 			}
 			return ""
+		case strings.HasPrefix(s, "("):
+			s = strings.TrimSpace(s[1:])
+			continue
 		}
 		break
 	}
