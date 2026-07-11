@@ -37,7 +37,7 @@ func runStatement(ctx context.Context, conn driver.Conn, args runStatementArgs) 
 		return nil, runStatementOutput{}, fmt.Errorf("provide a SQL statement to run")
 	}
 	// Reject before Exec: clickhouse-go runs only the first statement of a
-	// multi-statement write and silently drops the rest (verified; ClickHouse #66931).
+	// multi-statement write and silently drops the rest (ClickHouse #66931).
 	if query.ContainsMultipleStatements(args.SQL) {
 		return nil, runStatementOutput{}, fmt.Errorf("send one statement per call; multiple statements separated by ';' are not supported")
 	}
