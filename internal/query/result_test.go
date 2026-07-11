@@ -108,6 +108,22 @@ func TestContainsMultipleStatements(t *testing.T) {
 		{"SELECT 'a''; b' AS s", false},                                      // ';' inside a doubled-quote literal
 		{"INSERT INTO t VALUES ('x'';''y'); INSERT INTO t VALUES (1)", true}, // real 2nd stmt after a doubled-quote literal
 		{"SELECT `a``b` FROM t; DROP TABLE t", true},                         // real 2nd stmt after a doubled-backtick identifier
+		// Double-quoted literals (ClickHouse allows "..." as an identifier/string).
+		{`SELECT ";" AS s`, false},         // ';' inside a double-quoted literal
+		{`SELECT "a"; DROP TABLE t`, true}, // real separator after a double-quoted literal closes
+		// Degenerate separators: only a ';' followed by real content counts.
+		{"", false},          // empty
+		{"   ", false},       // whitespace only
+		{";", false},         // a bare terminator, nothing after
+		{"; SELECT 1", true}, // leading ';' then a statement
+		{";;", true},         // a second ';' is "real content" after the first
+		// Unterminated comment swallows the rest, so the scanner returns false
+		// (false negative). This is safe: on the driver's Exec path ClickHouse
+		// rejects the whole statement atomically (code 27, 0 rows written) — the
+		// silent-partial-write cannot happen. Do not "fix" this by special-casing
+		// unterminated comments; it would add churn for no behavior change.
+		{"INSERT INTO t VALUES (1) -- c ; INSERT INTO t VALUES (2)", false}, // unterminated line comment
+		{"INSERT INTO t VALUES (1) /* c ; INSERT INTO t VALUES (2)", false}, // unterminated block comment
 	}
 	for _, tt := range tests {
 		if got := ContainsMultipleStatements(tt.sql); got != tt.want {

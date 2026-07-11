@@ -33,7 +33,8 @@ func TestRunQuery_RejectsNonRowReturning(t *testing.T) {
 func TestBothTools_RejectMultipleStatements(t *testing.T) {
 	cases := []struct{ name, sql string }{
 		{"two-selects", "SELECT 1; SELECT 2"},
-		{"select-then-write", "SELECT 1; INSERT INTO t VALUES (1)"},
+		{"select-then-write", "SELECT 1; INSERT INTO t VALUES (1)"}, // multi-statement gate must win over row-returning routing
+		{"write-then-select", "INSERT INTO t VALUES (1); SELECT 2"}, // and the reverse, so run_statement rejects before ExecWritten
 		{"two-writes", "INSERT INTO t VALUES (1); INSERT INTO t VALUES (2)"},
 	}
 	for _, tt := range cases {
