@@ -89,7 +89,7 @@ func TestShape(t *testing.T) {
 
 	t.Run("not truncated when fetched <= limit", func(t *testing.T) {
 		r := Shape(cols, mk(3), 5, false)
-		if r.Truncated || r.RowCount != 3 || len(r.Rows) != 3 {
+		if r.Truncated || r.Count != 3 || len(r.Rows) != 3 {
 			t.Fatalf("got %+v", r)
 		}
 		if r.Note != "" {
@@ -99,7 +99,7 @@ func TestShape(t *testing.T) {
 
 	t.Run("truncated at limit+1, sentinel dropped", func(t *testing.T) {
 		r := Shape(cols, mk(6), 5, false) // fetched 6 = displayLimit(5)+1
-		if !r.Truncated || r.RowCount != 5 || len(r.Rows) != 5 {
+		if !r.Truncated || r.Count != 5 || len(r.Rows) != 5 {
 			t.Fatalf("got %+v", r)
 		}
 		if r.Limit != 5 {

@@ -133,13 +133,19 @@ func Bound(sql string, class StmtClass, fetchLimit int) string {
 	}
 }
 
+// Truncation is the shared shape every list-shaped tool embeds to report how
+// many items it returned and whether more existed beyond the applied limit.
+type Truncation struct {
+	Count     int    `json:"count" jsonschema:"number of items returned"`
+	Truncated bool   `json:"truncated" jsonschema:"true if more items existed beyond the limit"`
+	Limit     int    `json:"limit" jsonschema:"the applied limit"`
+	Note      string `json:"note,omitempty" jsonschema:"guidance when truncated"`
+}
+
 type Result struct {
-	Columns   []string `json:"columns" jsonschema:"column names, aligned to each row"`
-	Rows      [][]any  `json:"rows" jsonschema:"result rows as positional arrays aligned to columns; large integers and decimals are strings to avoid precision loss"`
-	RowCount  int      `json:"row_count" jsonschema:"number of rows returned"`
-	Truncated bool     `json:"truncated" jsonschema:"true if more rows existed beyond the limit"`
-	Limit     int      `json:"limit" jsonschema:"the applied row display limit"`
-	Note      string   `json:"note,omitempty" jsonschema:"guidance when truncated or when rows are an arbitrary subset"`
+	Columns    []string `json:"columns" jsonschema:"column names, aligned to each row"`
+	Rows       [][]any  `json:"rows" jsonschema:"result rows as positional arrays aligned to columns; large integers and decimals are strings to avoid precision loss"`
+	Truncation          // embedded: its fields flatten into the JSON object
 }
 
 // Shape drops the sentinel (displayLimit+1) row and reports truncation. When a
@@ -151,11 +157,13 @@ func Shape(columns []string, fetched [][]any, displayLimit int, ordered bool) Re
 		rows = fetched[:displayLimit]
 	}
 	r := Result{
-		Columns:   columns,
-		Rows:      rows,
-		RowCount:  len(rows),
-		Truncated: truncated,
-		Limit:     displayLimit,
+		Columns: columns,
+		Rows:    rows,
+		Truncation: Truncation{
+			Count:     len(rows),
+			Truncated: truncated,
+			Limit:     displayLimit,
+		},
 	}
 	switch {
 	case truncated && !ordered:

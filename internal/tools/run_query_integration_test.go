@@ -22,8 +22,8 @@ func TestRunQuery_Truncation(t *testing.T) {
 	if !res.Truncated {
 		t.Error("expected truncated=true")
 	}
-	if res.RowCount != 5 || len(res.Rows) != 5 {
-		t.Errorf("expected 5 rows, got %d", res.RowCount)
+	if res.Count != 5 || len(res.Rows) != 5 {
+		t.Errorf("expected 5 rows, got %d", res.Count)
 	}
 	if res.Note == "" {
 		t.Error("expected a truncation note")
@@ -36,8 +36,8 @@ func TestRunQuery_NotTruncated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if res.Truncated || res.RowCount != 3 {
-		t.Errorf("expected 3 rows not truncated, got %d truncated=%v", res.RowCount, res.Truncated)
+	if res.Truncated || res.Count != 3 {
+		t.Errorf("expected 3 rows not truncated, got %d truncated=%v", res.Count, res.Truncated)
 	}
 }
 
@@ -104,8 +104,8 @@ func TestRunQuery_SmallStatements(t *testing.T) {
 		}
 		// These statements always return at least one row (a db list, a column
 		// description, a plan line) — assert the projection wasn't dropped.
-		if res.RowCount == 0 || len(res.Columns) == 0 {
-			t.Errorf("%q: expected rows and columns, got rowcount=%d cols=%v", sql, res.RowCount, res.Columns)
+		if res.Count == 0 || len(res.Columns) == 0 {
+			t.Errorf("%q: expected rows and columns, got rowcount=%d cols=%v", sql, res.Count, res.Columns)
 		}
 	}
 	// DESCRIBE system.numbers must describe the `number` column.
@@ -154,14 +154,14 @@ func TestRunQuery_TrailingLineComment(t *testing.T) {
 
 	// Trailing comment on a scalar select.
 	_, res, err := runQuery(ctx, conn, runQueryArgs{SQL: "SELECT 1 AS n -- trailing comment", Limit: 5})
-	if err != nil || res.RowCount != 1 || res.Rows[0][0] != uint8(1) {
+	if err != nil || res.Count != 1 || res.Rows[0][0] != uint8(1) {
 		t.Errorf("scalar with trailing comment: rows=%v err=%v", res.Rows, err)
 	}
 
 	// The LIMIT before the comment must survive the wrap (3 rows, not more/fewer).
 	_, res, err = runQuery(ctx, conn, runQueryArgs{SQL: "SELECT number FROM system.numbers LIMIT 3 -- note", Limit: 5})
-	if err != nil || res.RowCount != 3 || res.Truncated {
-		t.Errorf("trailing comment must not swallow LIMIT 3: rowcount=%d truncated=%v err=%v", res.RowCount, res.Truncated, err)
+	if err != nil || res.Count != 3 || res.Truncated {
+		t.Errorf("trailing comment must not swallow LIMIT 3: rowcount=%d truncated=%v err=%v", res.Count, res.Truncated, err)
 	}
 
 	// `--` inside a string literal must round-trip, not be stripped as a comment.

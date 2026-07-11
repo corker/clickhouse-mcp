@@ -8,6 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	chdriver "github.com/corker/clickhouse-mcp/internal/clickhouse"
+	"github.com/corker/clickhouse-mcp/internal/query"
 )
 
 // DefaultDatabaseLimit keeps a many-database (e.g. multi-tenant) server from
@@ -19,10 +20,8 @@ type listDatabasesArgs struct {
 }
 
 type listDatabasesOutput struct {
-	Databases []string `json:"databases" jsonschema:"names of databases on the server"`
-	Truncated bool     `json:"truncated" jsonschema:"true if the server has more databases than were returned"`
-	Limit     int      `json:"limit" jsonschema:"the applied limit"`
-	Note      string   `json:"note,omitempty" jsonschema:"guidance when the list was truncated"`
+	Databases        []string `json:"databases" jsonschema:"names of databases on the server"`
+	query.Truncation          // count/truncated/limit/note
 }
 
 func RegisterListDatabases(server *mcp.Server, conn driver.Conn) {
@@ -58,8 +57,6 @@ func listDatabases(ctx context.Context, conn driver.Conn, args listDatabasesArgs
 		return nil, listDatabasesOutput{}, fmt.Errorf("read databases: %w", err)
 	}
 
-	out := listDatabasesOutput{Limit: limit}
-	names, out.Truncated, out.Note = truncate(names, limit, "databases")
-	out.Databases = names
-	return nil, out, nil
+	names, tr := truncate(names, limit, "databases")
+	return nil, listDatabasesOutput{Databases: names, Truncation: tr}, nil
 }
