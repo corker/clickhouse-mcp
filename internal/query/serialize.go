@@ -72,8 +72,8 @@ func ToJSONValue(v any, dbType string) any {
 	case chcol.Variant:
 		// Variant/Dynamic (Dynamic is an alias of Variant) wrap an opaque value;
 		// unwrap and recurse so a big-int inside still becomes a string. The wrapper
-		// carries no outer dbType for the inner value, so date-only info is lost here
-		// (a Date inside a Variant renders as a datetime — an accepted edge).
+		// exposes no dbType for the inner value, so a Date inside a Variant renders
+		// as a datetime.
 		if x.Nil() {
 			return nil
 		}
@@ -239,8 +239,8 @@ func reflectValue(rv reflect.Value, dbType string) any {
 		}
 		return out
 	default:
-		// Small scalars JSON encodes losslessly (int*, uint8/16/32, string, bool).
-		// Floats are handled in ToJSONValue (Inf/NaN → null) before reaching here.
+		// Floats never reach here — ToJSONValue handles them (Inf/NaN → null); the
+		// rest are small scalars JSON encodes as-is (int*, uint8/16/32, string, bool).
 		return rv.Interface()
 	}
 }

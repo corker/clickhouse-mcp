@@ -19,9 +19,7 @@ const (
 
 // CappedContext returns a context with hard row, byte, and time ceilings. The
 // overflow mode is throw: exceeding a cap fails the query (the safety backstop)
-// rather than silently returning a partial result, which result_overflow_mode=
-// break was verified to do unreliably. Verified to apply without any readonly
-// setting.
+// rather than silently returning a partial result.
 func CappedContext(ctx context.Context, maxRows, maxBytes, maxExecSeconds int) context.Context {
 	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
 		"max_result_rows":      maxRows,

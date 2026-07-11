@@ -51,11 +51,10 @@ func HasUnsupportedOutputClause(sql string) bool {
 
 // ContainsMultipleStatements reports whether sql holds more than one statement —
 // a semicolon with real content after it (a single trailing ';' does not count).
-// Both tools reject a multi-statement before executing: run_query's wrap would
-// otherwise turn it into a syntax error that leaks the injected LIMIT wrapper,
-// and — verified against a live server — clickhouse-go's Exec runs only the FIRST
-// statement of a multi-statement write and silently drops the rest with no error
-// (ClickHouse issue #66931). Rejecting keeps "one statement per call" honest.
+// The tools reject a multi-statement before executing because clickhouse-go's
+// Exec runs only the FIRST statement of a multi-statement write and silently
+// drops the rest with no error (ClickHouse issue #66931), and run_query's wrap
+// would turn it into a syntax error leaking the injected LIMIT wrapper.
 //
 // Semicolons inside string/identifier literals and comments do not separate
 // statements, so they are skipped. This is a scanner, not a full parser: it
@@ -196,8 +195,7 @@ func leadingKeyword(sql string) string {
 }
 
 // Bound wraps a boundable statement to cap the row count; others pass through
-// (the throw-mode cap is their backstop). It owns the boundability decision so a
-// caller cannot wrap a statement that should not be wrapped.
+// (the throw-mode cap is their backstop).
 //
 // The newline before the closing paren is load-bearing: if the inner query ends
 // in a trailing "-- comment", putting ") LIMIT n" on its own line stops the
