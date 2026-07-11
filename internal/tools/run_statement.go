@@ -33,6 +33,11 @@ func RegisterRunStatement(server *mcp.Server, conn driver.Conn) {
 }
 
 func runStatement(ctx context.Context, conn driver.Conn, args runStatementArgs) (*mcp.CallToolResult, runStatementOutput, error) {
+	// Reject before Exec: clickhouse-go runs only the first statement of a
+	// multi-statement write and silently drops the rest (verified; ClickHouse #66931).
+	if query.ContainsMultipleStatements(args.SQL) {
+		return nil, runStatementOutput{}, fmt.Errorf("send one statement per call; multiple statements separated by ';' are not supported")
+	}
 	if query.IsRowReturning(args.SQL) {
 		return nil, runStatementOutput{}, fmt.Errorf("run_statement is for statements that do not return rows; use run_query for SELECT/WITH/SHOW/DESCRIBE/EXPLAIN/EXISTS")
 	}

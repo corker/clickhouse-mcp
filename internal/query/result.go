@@ -41,6 +41,82 @@ func HasUnsupportedOutputClause(sql string) bool {
 	return tail != "" && isIdentifier(tail)
 }
 
+// ContainsMultipleStatements reports whether sql holds more than one statement —
+// a semicolon with real content after it (a single trailing ';' does not count).
+// Both tools reject a multi-statement before executing: run_query's wrap would
+// otherwise turn it into a syntax error that leaks the injected LIMIT wrapper,
+// and — verified against a live server — clickhouse-go's Exec runs only the FIRST
+// statement of a multi-statement write and silently drops the rest with no error
+// (ClickHouse issue #66931). Rejecting keeps "one statement per call" honest.
+//
+// Semicolons inside string/identifier literals and comments do not separate
+// statements, so they are skipped. This is a scanner, not a full parser: it
+// tracks quote and comment state, which is enough to place the real separators.
+func ContainsMultipleStatements(sql string) bool {
+	const (
+		normal = iota
+		inSingle
+		inDouble
+		inBacktick
+		inLine
+		inBlock
+	)
+	state := normal
+	for i := 0; i < len(sql); i++ {
+		c := sql[i]
+		switch state {
+		case normal:
+			switch {
+			case c == '\'':
+				state = inSingle
+			case c == '"':
+				state = inDouble
+			case c == '`':
+				state = inBacktick
+			case c == '-' && i+1 < len(sql) && sql[i+1] == '-':
+				state = inLine
+				i++
+			case c == '/' && i+1 < len(sql) && sql[i+1] == '*':
+				state = inBlock
+				i++
+			case c == ';':
+				// A separator only if anything but whitespace follows.
+				if strings.TrimSpace(sql[i+1:]) != "" {
+					return true
+				}
+			}
+		case inSingle:
+			switch c {
+			case '\\':
+				i++ // skip an escaped char inside the literal
+			case '\'':
+				state = normal
+			}
+		case inDouble:
+			switch c {
+			case '\\':
+				i++
+			case '"':
+				state = normal
+			}
+		case inBacktick:
+			if c == '`' {
+				state = normal
+			}
+		case inLine:
+			if c == '\n' {
+				state = normal
+			}
+		case inBlock:
+			if c == '*' && i+1 < len(sql) && sql[i+1] == '/' {
+				state = normal
+				i++
+			}
+		}
+	}
+	return false
+}
+
 // canBound reports whether a statement can be wrapped in SELECT * FROM (...)
 // LIMIT n+1 for row bounding. Only SELECT/WITH accept the wrap; the other
 // row-returning statements run as-is under the cap ceiling.

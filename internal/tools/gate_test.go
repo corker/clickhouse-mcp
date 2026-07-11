@@ -27,6 +27,29 @@ func TestRunQuery_RejectsNonRowReturning(t *testing.T) {
 	}
 }
 
+// Both tools reject a multi-statement before touching conn: run_query would
+// otherwise leak its LIMIT wrapper in a syntax error, and run_statement would
+// silently execute only the first statement (verified; ClickHouse #66931).
+func TestBothTools_RejectMultipleStatements(t *testing.T) {
+	cases := []struct{ name, sql string }{
+		{"two-selects", "SELECT 1; SELECT 2"},
+		{"select-then-write", "SELECT 1; INSERT INTO t VALUES (1)"},
+		{"two-writes", "INSERT INTO t VALUES (1); INSERT INTO t VALUES (2)"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, qErr := runQuery(context.Background(), nil, runQueryArgs{SQL: tt.sql})
+			if qErr == nil || !strings.Contains(qErr.Error(), "one statement per call") {
+				t.Errorf("run_query want one-statement rejection, got: %v", qErr)
+			}
+			_, _, sErr := runStatement(context.Background(), nil, runStatementArgs{SQL: tt.sql})
+			if sErr == nil || !strings.Contains(sErr.Error(), "one statement per call") {
+				t.Errorf("run_statement want one-statement rejection, got: %v", sErr)
+			}
+		})
+	}
+}
+
 func TestRunQuery_RejectsOutputClauses(t *testing.T) {
 	cases := []struct{ name, sql string }{
 		{"format", "SELECT 1 FORMAT JSON"},

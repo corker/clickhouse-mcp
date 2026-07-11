@@ -84,6 +84,31 @@ func TestHasUnsupportedOutputClause(t *testing.T) {
 	}
 }
 
+func TestContainsMultipleStatements(t *testing.T) {
+	tests := []struct {
+		sql  string
+		want bool
+	}{
+		{"SELECT 1", false},
+		{"SELECT 1;", false},         // trailing terminator only
+		{"SELECT 1;  \n ", false},    // trailing terminator + whitespace
+		{"SELECT 1; SELECT 2", true}, // two statements
+		{"SELECT 1;SELECT 2;", true}, // two statements, both terminated
+		{"INSERT INTO t VALUES (1); INSERT INTO t VALUES (2)", true}, // the silent-partial-write case
+		{"SELECT ';' AS s", false},                                   // semicolon inside a string literal
+		{"SELECT 1 -- ; not a separator", false},                     // semicolon in a line comment
+		{"SELECT 1 /* ; still safe */ FROM t", false},                // semicolon in a block comment
+		{"SELECT `a;b` FROM t", false},                               // semicolon in a backtick identifier
+		{"SELECT 'a'; DROP TABLE t", true},                           // real separator after a literal closes
+		{"SELECT '\\';' AS s", false},                                // escaped quote keeps the literal open
+	}
+	for _, tt := range tests {
+		if got := ContainsMultipleStatements(tt.sql); got != tt.want {
+			t.Errorf("ContainsMultipleStatements(%q) = %v, want %v", tt.sql, got, tt.want)
+		}
+	}
+}
+
 func TestBound(t *testing.T) {
 	tests := []struct {
 		name string
