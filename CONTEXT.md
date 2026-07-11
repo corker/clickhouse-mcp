@@ -37,9 +37,31 @@ If the **write-probe** shows writes are *not* refused (and write access wasn't r
 Server-side row and byte limits (`max_result_rows`, `max_result_bytes`) injected on every query, with the result reporting *why* it was truncated when a cap is hit.
 _Avoid_: limit, pagination (pagination is a separate `list_tables` concern)
 
+### Auth (v0.2, HTTP transport)
+
+**OIDC broker**:
+The server's v0.2 role: it is the OAuth authorization server *to* the **consuming LLM** (runs auth-code + PKCE) and a client *to* one **upstream issuer**. It gates access to the server; it does not give each user a distinct ClickHouse identity.
+_Avoid_: OAuth proxy, IdP broker (we broker *one* upstream, not many)
+
+**Upstream issuer**:
+The single external OIDC provider (Entra, Google, Keycloak, …) configured via `OIDC_ISSUER`. Its endpoints are resolved by OIDC Discovery, so a new provider is a config change, not code.
+_Avoid_: IdP (ambiguous — could mean the broker), tenant
+
+**Identity claim**:
+The ID-token claim the server reads to identify the user (`OIDC_IDENTITY_CLAIM`, default `email`). Config, not code — absorbs per-provider claim quirks.
+
+**Access claim**:
+The group/role claim the **upstream issuer** asserts, checked to allow or deny a user (`OIDC_REQUIRED_CLAIM` contains `OIDC_REQUIRED_VALUE`). The allow/deny decision lives in the IdP, never in our source.
+_Avoid_: allowlist, whitelist (those name the rejected email-in-source approach)
+
+**Tool scope**:
+An OAuth scope gating which tools a token may call — `clickhouse:read` for `run_query` + inspection tools, a future `clickhouse:write` for the write path. The scope *is* the enforcement seam for the read/write split.
+
 ## Relationships
 
 - A **consuming LLM** calls **inspection tools** to discover schema, then calls `run_query` through the **guarded query path**.
+- In v0.2 the **consuming LLM** authenticates via the **OIDC broker**, which delegates to one **upstream issuer**; the server reads the **identity claim** to know *who*, checks the **access claim** to allow/deny, and checks **tool scopes** for *what*.
+- Access decisions live in the **upstream issuer** (group/role membership), not in the server's source.
 - The **guarded query path** applies both the **read-only guard** and **caps** to every query.
 - The **read-only guard** is *asserted* by `readonly=2` and *verified* by the **write-probe**; on probe failure the path is **fail-closed**.
 - An **operator** may additionally connect as a dedicated read-only ClickHouse user (documented hardening) — this narrows *read* access, which the **read-only guard** does not.
@@ -55,3 +77,5 @@ _Avoid_: limit, pagination (pagination is a separate `list_tables` concern)
 
 - "read-only" was used to mean both *no writes* and *restricted read access* — resolved: the **read-only guard** guarantees only *no writes/DDL*. Restricting which data can be **read** is the **operator**'s job via a dedicated ClickHouse user, not something the guard provides.
 - "user" was used for both the human and the AI — resolved: the human is the **operator**, the AI is the **consuming LLM**.
+- "multi-provider IdP brokering" (original README) suggested brokering several IdPs at once — resolved: the **OIDC broker** fronts *one* **upstream issuer**, chosen by config; "multi-provider" means any OIDC issuer works, not several simultaneously (ADR-0002).
+- "allowed users" was an email list in source — resolved: authorization is an **access claim** the **upstream issuer** asserts, not an allowlist we maintain (ADR-0003).
