@@ -17,16 +17,16 @@ func TestRunStatement_WriteAndDDL(t *testing.T) {
 	_, out, err := runStatement(ctx, conn, runStatementArgs{
 		SQL: "CREATE TABLE " + db + ".t (x UInt64) ENGINE=Memory",
 	})
-	if err != nil || !out.OK || out.RowsWritten != 0 {
-		t.Fatalf("create: ok=%v rows=%d err=%v", out.OK, out.RowsWritten, err)
+	if err != nil || out.RowsWritten != 0 {
+		t.Fatalf("create: rows=%d err=%v", out.RowsWritten, err)
 	}
 
 	// INSERT: rows_written reflects the server's count.
 	_, out, err = runStatement(ctx, conn, runStatementArgs{
 		SQL: "INSERT INTO " + db + ".t SELECT number FROM system.numbers LIMIT 42",
 	})
-	if err != nil || !out.OK || out.RowsWritten != 42 {
-		t.Fatalf("insert: ok=%v rows=%d err=%v", out.OK, out.RowsWritten, err)
+	if err != nil || out.RowsWritten != 42 {
+		t.Fatalf("insert: rows=%d err=%v", out.RowsWritten, err)
 	}
 
 	// The write is visible via run_query.

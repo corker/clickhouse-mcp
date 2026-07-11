@@ -3,12 +3,11 @@ package tools
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	chdriver "github.com/corker/clickhouse-mcp/internal/clickhouse"
 )
 
 type runStatementArgs struct {
@@ -16,8 +15,7 @@ type runStatementArgs struct {
 }
 
 type runStatementOutput struct {
-	OK          bool   `json:"ok" jsonschema:"true when the statement executed without error"`
-	RowsWritten uint64 `json:"rows_written" jsonschema:"rows the server reported writing; 0 for DDL and statements that write nothing"`
+	RowsWritten uint64 `json:"rows_written" jsonschema:"rows the server reported writing (best-effort: 0 for DDL, and 0 on older ClickHouse servers that do not send write progress)"`
 }
 
 func RegisterRunStatement(server *mcp.Server, conn driver.Conn) {
@@ -34,14 +32,9 @@ func RegisterRunStatement(server *mcp.Server, conn driver.Conn) {
 }
 
 func runStatement(ctx context.Context, conn driver.Conn, args runStatementArgs) (*mcp.CallToolResult, runStatementOutput, error) {
-	// The native Exec returns no affected-row count, but the server streams it via
-	// the progress protocol; sum WroteRows across progress packets.
-	var wrote atomic.Uint64
-	pctx := clickhouse.Context(ctx, clickhouse.WithProgress(func(p *proto.Progress) {
-		wrote.Add(p.WroteRows)
-	}))
-	if err := conn.Exec(pctx, args.SQL); err != nil {
+	wrote, err := chdriver.ExecWritten(ctx, conn, args.SQL)
+	if err != nil {
 		return nil, runStatementOutput{}, fmt.Errorf("statement failed: %w", err)
 	}
-	return nil, runStatementOutput{OK: true, RowsWritten: wrote.Load()}, nil
+	return nil, runStatementOutput{RowsWritten: wrote}, nil
 }

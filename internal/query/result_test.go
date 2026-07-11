@@ -22,28 +22,27 @@ func TestCanBound(t *testing.T) {
 		{"", false},
 	}
 	for _, tt := range tests {
-		if got := CanBound(tt.sql); got != tt.want {
-			t.Errorf("CanBound(%q) = %v, want %v", tt.sql, got, tt.want)
+		if got := canBound(tt.sql); got != tt.want {
+			t.Errorf("canBound(%q) = %v, want %v", tt.sql, got, tt.want)
 		}
 	}
 }
 
 func TestBound(t *testing.T) {
 	tests := []struct {
-		name     string
-		sql      string
-		canBound bool
-		want     string
+		name string
+		sql  string
+		want string
 	}{
-		{"boundable wraps", "SELECT n FROM t", true, "SELECT * FROM (SELECT n FROM t\n) LIMIT 6"},
-		{"strips trailing semicolon", "SELECT 1;", true, "SELECT * FROM (SELECT 1\n) LIMIT 6"},
-		{"strips trailing space+semicolon", "SELECT 1 ; ", true, "SELECT * FROM (SELECT 1\n) LIMIT 6"},
-		{"trailing line comment: paren on own line", "SELECT 1 -- c", true, "SELECT * FROM (SELECT 1 -- c\n) LIMIT 6"},
-		{"non-boundable unchanged", "SHOW DATABASES", false, "SHOW DATABASES"},
-		{"describe unchanged", "DESCRIBE t", false, "DESCRIBE t"},
+		{"boundable wraps", "SELECT n FROM t", "SELECT * FROM (SELECT n FROM t\n) LIMIT 6"},
+		{"strips trailing semicolon", "SELECT 1;", "SELECT * FROM (SELECT 1\n) LIMIT 6"},
+		{"strips trailing space+semicolon", "SELECT 1 ; ", "SELECT * FROM (SELECT 1\n) LIMIT 6"},
+		{"trailing line comment: paren on own line", "SELECT 1 -- c", "SELECT * FROM (SELECT 1 -- c\n) LIMIT 6"},
+		{"non-boundable unchanged", "SHOW DATABASES", "SHOW DATABASES"},
+		{"describe unchanged", "DESCRIBE t", "DESCRIBE t"},
 	}
 	for _, tt := range tests {
-		if got := Bound(tt.sql, tt.canBound, 6); got != tt.want {
+		if got := Bound(tt.sql, 6); got != tt.want {
 			t.Errorf("Bound(%q) = %q, want %q", tt.sql, got, tt.want)
 		}
 	}

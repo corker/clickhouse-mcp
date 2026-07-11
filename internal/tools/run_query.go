@@ -48,7 +48,7 @@ func runQuery(ctx context.Context, conn driver.Conn, args runQueryArgs) (*mcp.Ca
 // may run the statement is ClickHouse's call — a non-read statement here just
 // returns whatever the driver/server says.
 func execBounded(ctx context.Context, conn driver.Conn, sql string, displayLimit int) (query.Result, error) {
-	bounded := query.Bound(sql, query.CanBound(sql), displayLimit+1)
+	bounded := query.Bound(sql, displayLimit+1)
 
 	qctx := chdriver.DefaultReadContext(ctx)
 

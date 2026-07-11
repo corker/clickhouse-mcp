@@ -5,12 +5,12 @@ import (
 	"strings"
 )
 
-// CanBound reports whether a statement can be wrapped in SELECT * FROM (...)
+// canBound reports whether a statement can be wrapped in SELECT * FROM (...)
 // LIMIT n+1 for row bounding. SELECT/WITH can; SHOW/DESCRIBE/EXPLAIN/EXISTS and
 // everything else cannot be wrapped and run as-is under the cap ceiling. This is
 // a bounding decision, not an authorization one — ClickHouse's per-user
 // privileges are the boundary (ADR-0006).
-func CanBound(sql string) bool {
+func canBound(sql string) bool {
 	switch leadingKeyword(sql) {
 	case "SELECT", "WITH":
 		return true
@@ -50,13 +50,14 @@ func leadingKeyword(sql string) string {
 }
 
 // Bound wraps a boundable statement to cap the row count; others pass through
-// (the throw-mode cap is their backstop).
+// (the throw-mode cap is their backstop). It owns the boundability decision so a
+// caller cannot wrap a statement that should not be wrapped.
 //
 // The newline before the closing paren is load-bearing: if the inner query ends
 // in a trailing "-- comment", putting ") LIMIT n" on its own line stops the
 // comment from swallowing it (which would leave an unmatched paren).
-func Bound(sql string, canBound bool, fetchLimit int) string {
-	if !canBound {
+func Bound(sql string, fetchLimit int) string {
+	if !canBound(sql) {
 		return sql
 	}
 	inner := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(sql), "; "))
