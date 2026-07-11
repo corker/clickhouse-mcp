@@ -57,6 +57,15 @@ _Avoid_: allowlist, whitelist (those name the rejected email-in-source approach)
 **Tool scope**:
 An OAuth scope gating which tools a token may call — `clickhouse:read` for `run_query` + inspection tools, a future `clickhouse:write` for the write path. The scope *is* the enforcement seam for the read/write split.
 
+### Testing
+
+**Fast lane**:
+Pure-logic unit tests (`go test -short`) — no Docker, sub-second. Covers `config.Load`, the truncation decision, the type-mapping table.
+_Avoid_: unit tests (ambiguous — the integration lane also uses Go's testing package)
+
+**Integration lane**:
+`//go:build integration` tests that start real ClickHouse and Keycloak via testcontainers. Where correctness is actually proven — the **read-only guard**, **write-probe**, **caps**, driver types, and the whole auth chain.
+
 ## Relationships
 
 - A **consuming LLM** calls **inspection tools** to discover schema, then calls `run_query` through the **guarded query path**.
@@ -65,6 +74,7 @@ An OAuth scope gating which tools a token may call — `clickhouse:read` for `ru
 - The **guarded query path** applies both the **read-only guard** and **caps** to every query.
 - The **read-only guard** is *asserted* by `readonly=2` and *verified* by the **write-probe**; on probe failure the path is **fail-closed**.
 - An **operator** may additionally connect as a dedicated read-only ClickHouse user (documented hardening) — this narrows *read* access, which the **read-only guard** does not.
+- The **read-only guard**, driver types, and auth chain are proven only in the **integration lane** — never mocked, because a mocked guard is false confidence on the security-critical path.
 
 ## Example dialogue
 
