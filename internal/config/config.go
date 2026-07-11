@@ -23,6 +23,9 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("CLICKHOUSE_PORT: %d out of range (1-65535)", port)
+	}
 	secure, err := envBool("CLICKHOUSE_SECURE", false)
 	if err != nil {
 		return nil, err
