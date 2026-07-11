@@ -22,8 +22,17 @@ No `pkg/`. This is a binary, not a library.
 - Run `mise exec -- go test ./...` and `mise exec -- go vet ./...` before pushing.
 - Lint: `mise exec -- golangci-lint run` (config in `.golangci.yml`, v2 format).
 - Format: `mise exec -- gofmt -s -w .` and `mise exec -- goimports -w .`.
-- Don't push to `main` without asking.
 - Don't commit `go.sum` conflicts by hand — always `mise exec -- go mod tidy` first.
+
+## Branching & merging
+
+- **Never commit to `main` directly.** `main` is protected by a GitHub ruleset (`protect-main`):
+  PR required, squash-only merge, no force-push, no deletion.
+- Every change goes on a feature branch → PR → **squash merge** into `main`. One PR = one
+  squashed commit on `main`.
+- Repo is configured squash-only (merge-commit and rebase-merge are disabled); merged branches
+  auto-delete.
+- Open PRs with `gh pr create`; merge with `gh pr merge --squash`. Don't push to `main` without asking.
 
 ## Adding a tool
 
