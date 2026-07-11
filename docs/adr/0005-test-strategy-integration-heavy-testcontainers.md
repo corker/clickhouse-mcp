@@ -12,8 +12,8 @@ middle, and a thin end-to-end top.
   code that this base is meaningful, not token.
 - **Integration lane** — gated by `//go:build integration`, uses **testcontainers-go** to start
   pinned ClickHouse and Keycloak containers in-process with wait-strategy readiness. This is where
-  confidence comes from: the read-only guard, the write-probe, result caps, real driver type
-  scanning, OIDC discovery/JWKS/claim-gate, and PKCE enforcement.
+  confidence comes from: the authorization boundary (a SELECT-only user refused writes), result
+  caps, real driver type scanning, OIDC discovery/JWKS/claim-gate, and PKCE enforcement.
 - **E2E** — 1–2 full MCP-client → tool → real-ClickHouse round-trips, also integration-tagged.
 
 CI runs the fast lane on every push and the integration lane as a separate job (a flake or Docker
@@ -22,10 +22,11 @@ issue there is visibly distinct from a unit failure and does not block a docs-on
 ## Why a diamond, not a pyramid
 
 Verified this session (see [[clickhouse-driver-verified-behavior]]): the load-bearing properties
-are all integration-only. `readonly=2` blocking writes, the write-probe distinguishing safe from
-unsafe setups, `LIMIT n+1` truncation, the type→JSON contract (including the `Array(UInt8)`→base64
-bug), and the whole OIDC/PKCE chain **cannot be proven by a pure unit test** — the guard lives
-server-side, the types are the driver's runtime behavior, the auth needs a real issuer. Two design
+are all integration-only. A `GRANT SELECT`-only user having writes refused (the authorization
+boundary — including that an in-query `SETTINGS readonly=0` cannot override it), `LIMIT n+1`
+truncation, the type→JSON contract (including the `Array(UInt8)`→base64 bug), and the whole
+OIDC/PKCE chain **cannot be proven by a pure unit test** — the boundary lives in ClickHouse, the
+types are the driver's runtime behavior, the auth needs a real issuer. Two design
 assumptions this session were *wrong* and only a live probe caught them. A wide unit base here
 would be fast tests that pass while the real behavior is broken — negative value on the
 security-critical path. So we never mock the guard, the driver types, or the IdP.

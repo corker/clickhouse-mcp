@@ -18,20 +18,13 @@ _Avoid_: user, admin
 A tool that returns typed, structured schema/catalog information for discovery (`list_databases`, `list_tables`). Exists so the **consuming LLM** can write correct SQL without guessing.
 _Avoid_: helper, wrapper
 
-**Guarded query path**:
-The single code path through which all raw SQL flows. It fast-fails non-read statements, applies the read-only guard, injects caps, and reports truncation. `run_query` is its only entry point.
-_Avoid_: query executor, runner
+**Query path** / **Statement path**:
+The two execution tools. `run_query` runs a single row-returning statement (`conn.Query`), bounds it, and reports truncation; `run_statement` runs a single non-row-returning statement (`conn.Exec`) and reports rows written. Which one the **consuming LLM** picks is the routing — the server does not inspect SQL to decide what is allowed.
+_Avoid_: guarded query path (there is no server-side guard — see **Authorization boundary**), query executor, runner
 
-**Read-only guard**:
-The server-enforced guarantee that a query cannot write or run DDL. Enforced by ClickHouse (`readonly=2`), *verified* by the **write-probe** — never by SQL string parsing alone.
-_Avoid_: readonly check, SQL filter
-
-**Write-probe**:
-A harmless write (`CREATE TEMPORARY TABLE`) attempted once at startup to *verify* the **read-only guard** actually holds against the live connection, across any ClickHouse setup. Its refusal — not the success of a `SET` — is the trusted signal.
-_Avoid_: healthcheck, self-test
-
-**Fail-closed**:
-If the **write-probe** shows writes are *not* refused (and write access wasn't requested), the **guarded query path** is withheld — `run_query` is not served, though **inspection tools** still are.
+**Authorization boundary**:
+What the caller may run is decided entirely by the **connected ClickHouse user's privileges** (RBAC), enforced by ClickHouse on every statement. The server does not authorize (ADR-0006). For a read-only deployment the **operator** connects as a `GRANT SELECT`-only user; a `readonly=2` setting is *not* a boundary because an in-query `SETTINGS readonly=0` overrides it.
+_Avoid_: read-only guard, write-probe, allowlist (those name the removed server-side-guard approach)
 
 **Cap / truncation**:
 Server-side row and byte limits (`max_result_rows`, `max_result_bytes`) injected on every query, with the result reporting *why* it was truncated when a cap is hit.
@@ -64,28 +57,27 @@ Pure-logic unit tests (`go test -short`) — no Docker, sub-second. Covers `conf
 _Avoid_: unit tests (ambiguous — the integration lane also uses Go's testing package)
 
 **Integration lane**:
-`//go:build integration` tests that start real ClickHouse and Keycloak via testcontainers. Where correctness is actually proven — the **read-only guard**, **write-probe**, **caps**, driver types, and the whole auth chain.
+`//go:build integration` tests that start real ClickHouse (and, in v0.2, Keycloak) via testcontainers. Where correctness is actually proven — the **authorization boundary** (a SELECT-only user refused writes), **caps**, driver types, and the whole auth chain.
 
 ## Relationships
 
-- A **consuming LLM** calls **inspection tools** to discover schema, then calls `run_query` through the **guarded query path**.
+- A **consuming LLM** calls **inspection tools** to discover schema, then calls `run_query` (reads) or `run_statement` (writes/DDL).
 - In v0.2 the **consuming LLM** authenticates via the **OIDC broker**, which delegates to one **upstream issuer**; the server reads the **identity claim** to know *who*, checks the **access claim** to allow/deny, and checks **tool scopes** for *what*.
 - Access decisions live in the **upstream issuer** (group/role membership), not in the server's source.
-- The **guarded query path** applies both the **read-only guard** and **caps** to every query.
-- The **read-only guard** is *asserted* by `readonly=2` and *verified* by the **write-probe**; on probe failure the path is **fail-closed**.
-- An **operator** may additionally connect as a dedicated read-only ClickHouse user (documented hardening) — this narrows *read* access, which the **read-only guard** does not.
-- The **read-only guard**, driver types, and auth chain are proven only in the **integration lane** — never mocked, because a mocked guard is false confidence on the security-critical path.
+- The **query path** applies **caps** to every row-returning query; both paths are subject to the **authorization boundary**.
+- The **authorization boundary** is the connected ClickHouse user's privileges — for read-only, the **operator** connects as a `GRANT SELECT`-only user. This is the *only* control; there is no server-side guard to bypass.
+- The **authorization boundary**, driver types, and auth chain are proven only in the **integration lane** — never mocked, because a mocked boundary is false confidence on the security-critical path.
 
 ## Example dialogue
 
-> **Dev:** "If we send `readonly=2`, why do we still need the **write-probe**?"
-> **Domain expert:** "Because on some setups the `SET` is silently dropped — a proxy strips it, or the build ignores it. The `SET` succeeding proves nothing. Only a **write** actually getting *refused* proves the **read-only guard** holds."
-> **Dev:** "And if the probe shows a write went through?"
-> **Domain expert:** "Then we're not read-only. We **fail-closed** — withhold `run_query`, keep the **inspection tools**, and tell the **operator** which layer to fix."
+> **Dev:** "Why doesn't the server just set `readonly=2` to guarantee read-only?"
+> **Domain expert:** "Because it isn't a boundary. A caller can append `SETTINGS readonly=0` to their statement and it's overridden — verified against a live server. The only thing that actually refuses a write is the connected user *lacking the privilege*."
+> **Dev:** "So how does an **operator** get a read-only deployment?"
+> **Domain expert:** "They point the server at a ClickHouse user granted only `SELECT`. Then ClickHouse refuses every write, regardless of what SQL we send. The server never inspects intent — that's the **authorization boundary**, and it lives in the database, not our code."
 
 ## Flagged ambiguities
 
-- "read-only" was used to mean both *no writes* and *restricted read access* — resolved: the **read-only guard** guarantees only *no writes/DDL*. Restricting which data can be **read** is the **operator**'s job via a dedicated ClickHouse user, not something the guard provides.
+- "read-only" was used to mean both *no writes* and *restricted read access* — resolved: both are the **operator**'s job via the connected ClickHouse user's grants. A `GRANT SELECT`-only user gives *no writes/DDL*; narrowing *which* data is readable is further grants on that same user. The server provides neither — it is the **authorization boundary** (ADR-0006).
 - "user" was used for both the human and the AI — resolved: the human is the **operator**, the AI is the **consuming LLM**.
 - "multi-provider IdP brokering" (original README) suggested brokering several IdPs at once — resolved: the **OIDC broker** fronts *one* **upstream issuer**, chosen by config; "multi-provider" means any OIDC issuer works, not several simultaneously (ADR-0002).
 - "allowed users" was an email list in source — resolved: authorization is an **access claim** the **upstream issuer** asserts, not an allowlist we maintain (ADR-0003).

@@ -5,54 +5,39 @@ import (
 	"strings"
 )
 
-// StmtClass is how run_query dispatches row bounding, decided by the leading
-// keyword of a statement.
-type StmtClass int
+// IsBlank reports whether sql is empty or only whitespace/comments — nothing to
+// run. Both tools reject it up front with a clear message instead of forwarding
+// it (run_query would misroute it to run_statement, and run_statement would hand
+// back ClickHouse's bare "Empty query").
+func IsBlank(sql string) bool {
+	return leadingKeyword(sql) == ""
+}
 
-const (
-	// ClassRejected is a statement not on the read-only allowlist.
-	ClassRejected StmtClass = iota
-	// ClassSelect is SELECT/WITH — bounded by wrapping in SELECT * FROM (...) LIMIT n+1.
-	ClassSelect
-	// ClassSmall is SHOW/DESCRIBE/EXPLAIN/EXISTS — inherently small, run as-is.
-	ClassSmall
-)
-
-// Classify is a light UX gate, NOT the security boundary (readonly=2 is).
-// Verified: SELECT/WITH accept the subquery wrap; the ClassSmall statements do
-// not and need no bounding.
-func Classify(sql string) StmtClass {
-	head := leadingKeyword(sql)
-	switch head {
-	case "SELECT", "WITH":
-		return ClassSelect
-	case "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "EXISTS":
-		return ClassSmall
+// IsRowReturning reports whether a statement produces rows, i.e. belongs on
+// run_query rather than run_statement. This is a routing decision, not an
+// authorization one — ClickHouse's per-user privileges are the boundary
+// (ADR-0006). It keeps a write out of the Query path, where the driver would
+// still execute the write and then error on the empty result set.
+func IsRowReturning(sql string) bool {
+	switch leadingKeyword(sql) {
+	case "SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "EXISTS":
+		return true
 	default:
-		return ClassRejected
+		return false
 	}
 }
 
-// HasUnsupportedOutputClause reports whether the query ends with a FORMAT or
-// INTO OUTFILE clause, which redirect output away from the structured rows this
-// tool returns. Caught early for a clear message instead of a confusing wrapped-
-// subquery syntax error.
-//
-// Both are terminal clauses, so it matches only "FORMAT <name>" or "INTO OUTFILE"
-// as the tail of the (semicolon-trimmed) statement. This avoids false positives
-// on a column named `format`, `formatDateTime(...)`, or a mid-query token, at the
-// cost of not catching the (invalid) case where they appear mid-statement — which
-// ClickHouse rejects anyway.
+// HasUnsupportedOutputClause reports whether the query ends in FORMAT or INTO
+// OUTFILE, which redirect output away from the structured rows this tool returns.
+// Unwrapped they run but yield no rows (and INTO OUTFILE may write a file
+// server-side), so run_query rejects them with a clear message instead.
 func HasUnsupportedOutputClause(sql string) bool {
-	// Strip -- line comments first so a trailing "-- FORMAT JSON" comment is not
-	// mistaken for an actual output clause. (String literals are not tokenized;
-	// a `--` inside a literal is rare and the fallout is only a spurious reject.)
 	upper := strings.ToUpper(strings.TrimRight(strings.TrimSpace(stripLineComments(sql)), "; "))
 	if strings.HasSuffix(upper, "INTO OUTFILE") || strings.Contains(upper, "INTO OUTFILE ") {
 		return true
 	}
-	// FORMAT <name> as the final clause: find the last FORMAT that is a whole
-	// word and is followed only by a single identifier (the format name).
+	// FORMAT <name> as the final clause: the last whole-word FORMAT followed only
+	// by a single identifier (the format name).
 	idx := strings.LastIndex(upper, "FORMAT ")
 	if idx < 0 {
 		return false
@@ -64,11 +49,12 @@ func HasUnsupportedOutputClause(sql string) bool {
 	return tail != "" && isIdentifier(tail)
 }
 
-// ContainsMultipleStatements reports whether sql holds more than one statement,
-// i.e. a semicolon with real content after it. A single trailing ';' does not
-// count. Checked before Bound wraps the query, so a second statement is rejected
-// with a clear message instead of surfacing a syntax error against the injected
-// "SELECT * FROM (...) LIMIT n" wrapper — which leaks tool internals to the caller.
+// ContainsMultipleStatements reports whether sql holds more than one statement —
+// a semicolon with real content after it (a single trailing ';' does not count).
+// The tools reject a multi-statement before executing because clickhouse-go's
+// Exec runs only the FIRST statement of a multi-statement write and silently
+// drops the rest with no error (ClickHouse issue #66931), and run_query's wrap
+// would turn it into a syntax error leaking the injected LIMIT wrapper.
 //
 // Semicolons inside string/identifier literals and comments do not separate
 // statements, so they are skipped. This is a scanner, not a full parser: it
@@ -138,6 +124,18 @@ func ContainsMultipleStatements(sql string) bool {
 	return false
 }
 
+// canBound reports whether a statement can be wrapped in SELECT * FROM (...)
+// LIMIT n+1 for row bounding. Only SELECT/WITH accept the wrap; the other
+// row-returning statements run as-is under the cap ceiling.
+func canBound(sql string) bool {
+	switch leadingKeyword(sql) {
+	case "SELECT", "WITH":
+		return true
+	default:
+		return false
+	}
+}
+
 func stripLineComments(sql string) string {
 	lines := strings.Split(sql, "\n")
 	for i, line := range lines {
@@ -162,7 +160,9 @@ func isIdentByte(b byte) bool {
 }
 
 // leadingKeyword returns the upper-cased first token, skipping leading
-// whitespace and a leading line/block comment.
+// whitespace, line/block comments, and opening parens. The paren skip matters
+// because "(SELECT 1)" and "(SELECT 1) UNION ALL (SELECT 2)" are valid
+// row-returning queries whose keyword would otherwise read as empty.
 func leadingKeyword(sql string) string {
 	s := strings.TrimSpace(sql)
 	for {
@@ -179,6 +179,9 @@ func leadingKeyword(sql string) string {
 				continue
 			}
 			return ""
+		case strings.HasPrefix(s, "("):
+			s = strings.TrimSpace(s[1:])
+			continue
 		}
 		break
 	}
@@ -191,20 +194,18 @@ func leadingKeyword(sql string) string {
 	return strings.ToUpper(s[:i])
 }
 
-// Bound wraps SELECT/WITH to cap the row count; small statements pass through
+// Bound wraps a boundable statement to cap the row count; others pass through
 // (the throw-mode cap is their backstop).
 //
 // The newline before the closing paren is load-bearing: if the inner query ends
 // in a trailing "-- comment", putting ") LIMIT n" on its own line stops the
 // comment from swallowing it (which would leave an unmatched paren).
-func Bound(sql string, class StmtClass, fetchLimit int) string {
-	switch class {
-	case ClassSelect:
-		inner := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(sql), "; "))
-		return "SELECT * FROM (" + inner + "\n) LIMIT " + strconv.Itoa(fetchLimit)
-	default:
+func Bound(sql string, fetchLimit int) string {
+	if !canBound(sql) {
 		return sql
 	}
+	inner := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(sql), "; "))
+	return "SELECT * FROM (" + inner + "\n) LIMIT " + strconv.Itoa(fetchLimit)
 }
 
 // Truncation is embedded by every list-shaped tool's output so they share one

@@ -28,7 +28,8 @@ model does not treat it as a defined result.
   changes what the model sees without saying so. `LIMIT n+1` is injected but the truncation is
   explicit.
 - **Pre-reject unbounded queries** — rejected: punishes the common naturally-small unbounded case
-  (`SELECT * FROM system.databases`) and needs the SQL parsing we banned for the read-only guard.
+  (`SELECT * FROM system.databases`) and needs deep SQL parsing the server deliberately avoids
+  (authorization is ClickHouse's, not ours — ADR-0006).
 - **Summary-instead-of-rows** — rejected: substituting an aggregate for the requested rows is a
   semantic lie about what ran.
 

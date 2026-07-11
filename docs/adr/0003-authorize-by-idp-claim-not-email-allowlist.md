@@ -8,7 +8,8 @@ gate is then a **configurable group/role claim**: `OIDC_REQUIRED_CLAIM` (e.g. `g
 contain `OIDC_REQUIRED_VALUE` (e.g. `clickhouse-mcp-users`). To grant or revoke a person, the
 operator edits **group membership in their IdP** — no code change, no redeploy. Fine-grained,
 tool-level gating uses **OAuth scopes** (`clickhouse:read` for `run_query` and the inspection
-tools; a future `clickhouse:write` gates the write path behind `CLICKHOUSE_ALLOW_WRITE_ACCESS`).
+tools; a future `clickhouse:write` for `run_statement`). Whether a scoped statement actually
+writes is still ClickHouse's call via the connected user's privileges (ADR-0006).
 
 ## Considered options
 
@@ -27,8 +28,8 @@ The MCP authorization spec and current guidance treat authorization as an IdP/pl
 validate the token, then decide from a claim the IdP already issued (group, role, or scope). This
 keeps identity governance (SSO, audit, offboarding) where it already lives, generalizes across OIDC
 providers (only the claim *name* varies — config, per ADR-0002), and needs no redeploy to change
-access. Scopes give a clean seam to gate read vs. write tools, unifying with the
-`CLICKHOUSE_ALLOW_WRITE_ACCESS` intent from ADR-0001.
+access. Scopes give a clean seam to gate which tools a token may call; the underlying write
+authorization is the connected ClickHouse user's privileges (ADR-0006).
 
 ## Consequences
 

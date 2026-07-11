@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/testcontainers/testcontainers-go"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
 	"github.com/corker/clickhouse-mcp/internal/clickhouse"
@@ -28,6 +29,8 @@ var (
 	once       sync.Once
 	sharedConn driver.Conn
 	sharedErr  error
+	sharedHost string
+	sharedPort int
 )
 
 // Start does not isolate: fixtures created here land in the shared default
@@ -56,6 +59,23 @@ func Database(t *testing.T) (conn driver.Conn, database string) {
 	}
 	t.Cleanup(func() { _ = conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+database) })
 	return conn, database
+}
+
+// ConnectAs opens a connection to the shared container as a specific user, for
+// tests that assert the RBAC authorization boundary from a restricted account.
+// Start must have been called first (it boots the container and records its
+// endpoint).
+func ConnectAs(t *testing.T, user, password string) driver.Conn {
+	t.Helper()
+	Start(t)
+	conn, err := clickhouse.New(context.Background(), &config.Config{
+		Host: sharedHost, Port: sharedPort, User: user, Password: password, Database: "default",
+	})
+	if err != nil {
+		t.Fatalf("connect as %s: %v", user, err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
 }
 
 // sanitize turns a test name into a valid, unique ClickHouse identifier. The
@@ -87,6 +107,9 @@ func boot() (driver.Conn, error) {
 		tcclickhouse.WithUsername(user),
 		tcclickhouse.WithPassword(pass),
 		tcclickhouse.WithDatabase(db),
+		// Grant the default user SQL access control (CREATE USER / GRANT) so tests
+		// can assert the RBAC authorization boundary (ADR-0006).
+		testcontainers.WithEnv(map[string]string{"CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1"}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("run container: %w", err)
@@ -101,6 +124,7 @@ func boot() (driver.Conn, error) {
 		return nil, fmt.Errorf("container port: %w", err)
 	}
 
+	sharedHost, sharedPort = host, int(port.Num())
 	cfg := &config.Config{Host: host, Port: int(port.Num()), User: user, Password: pass, Database: db}
 	connCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

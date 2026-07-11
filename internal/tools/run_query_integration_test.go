@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -61,9 +62,52 @@ func TestRunQuery_Types(t *testing.T) {
 	}
 }
 
-func TestRunQuery_ColumnTypes(t *testing.T) {
+// The serializer's unit tests hand-build Go values (time.Time, uuid.UUID,
+// net.IP, []byte), assuming the driver scans each type into that Go shape. This
+// runs the same types through a real driver and asserts the rendered JSON, so a
+// scan-shape assumption that is wrong fails here rather than shipping (ADR-0005).
+func TestRunQuery_TypeRendering_LiveDriver(t *testing.T) {
 	conn := testsupport.Start(t)
-	// column_types tells the caller which stringified values are numerics.
+	_, res, err := runQuery(context.Background(), conn, runQueryArgs{
+		SQL: `SELECT
+			toDate('2026-07-12') AS d,
+			toDate32('2026-07-12') AS d32,
+			CAST('d592e5b1-7b76-42b0-8663-2b3197fbfc40' AS UUID) AS id,
+			toIPv4('1.2.3.4') AS ip4,
+			toIPv6('2001:db8::1') AS ip6,
+			CAST([1,2,3] AS Array(UInt8)) AS bytes,
+			map(toDate('2026-07-12'), toUInt64(1)) AS m`,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	row := res.Rows[0]
+	checks := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"Date -> calendar date", row[0], "2026-07-12"},
+		{"Date32 -> calendar date", row[1], "2026-07-12"},
+		{"UUID -> canonical string", row[2], "d592e5b1-7b76-42b0-8663-2b3197fbfc40"},
+		{"IPv4 -> dotted string", row[3], "1.2.3.4"},
+		{"IPv6 -> colon string", row[4], "2001:db8::1"},
+		{"Array(UInt8) -> number array", row[5], []any{1, 2, 3}},
+		{"Map(Date, UInt64) -> date-keyed", row[6], map[string]any{"2026-07-12": "1"}},
+	}
+	for _, c := range checks {
+		if !reflect.DeepEqual(c.got, c.want) {
+			t.Errorf("%s: got %#v, want %#v", c.name, c.got, c.want)
+		}
+	}
+}
+
+// column_types earns its place by letting a caller tell a stringified numeric
+// from a real string: a UInt64 and a String both arrive as JSON strings, and
+// only column_types distinguishes them. This asserts that disambiguation, not
+// merely that the slice is populated and aligned.
+func TestRunQuery_ColumnTypesDisambiguateStringifiedNumerics(t *testing.T) {
+	conn := testsupport.Start(t)
 	_, res, err := runQuery(context.Background(), conn, runQueryArgs{
 		SQL: "SELECT toUInt64(1) AS u, CAST(1.5 AS Decimal(10,2)) AS d, 'hi' AS s",
 	})
@@ -71,28 +115,24 @@ func TestRunQuery_ColumnTypes(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	if len(res.ColumnTypes) != len(res.Columns) {
-		t.Fatalf("column_types must align with columns: types=%v cols=%v", res.ColumnTypes, res.Columns)
+		t.Fatalf("column_types must align 1:1 with columns: types=%v cols=%v", res.ColumnTypes, res.Columns)
 	}
-	if res.ColumnTypes[0] != "UInt64" || res.ColumnTypes[2] != "String" {
-		t.Errorf("expected UInt64 and String types, got %v", res.ColumnTypes)
+
+	// The numeric and the real string are indistinguishable by value alone...
+	u, uOK := res.Rows[0][0].(string)
+	s, sOK := res.Rows[0][2].(string)
+	if !uOK || !sOK || u != "1" || s != "hi" {
+		t.Fatalf("expected both cells as strings \"1\" and \"hi\", got %#v and %#v", res.Rows[0][0], res.Rows[0][2])
+	}
+	// ...and only column_types tells the caller which one to reparse as a number.
+	if res.ColumnTypes[0] != "UInt64" {
+		t.Errorf("column u must be typed UInt64 so the caller reparses %q as a number, got %q", u, res.ColumnTypes[0])
+	}
+	if res.ColumnTypes[2] != "String" {
+		t.Errorf("column s must be typed String so the caller leaves %q alone, got %q", s, res.ColumnTypes[2])
 	}
 	if !strings.HasPrefix(res.ColumnTypes[1], "Decimal") {
-		t.Errorf("expected a Decimal type for column d, got %q", res.ColumnTypes[1])
-	}
-}
-
-func TestRunQuery_RejectsMultipleStatements(t *testing.T) {
-	conn := testsupport.Start(t)
-	_, _, err := runQuery(context.Background(), conn, runQueryArgs{SQL: "SELECT 1; SELECT 2"})
-	if err == nil {
-		t.Fatal("two statements should be rejected")
-	}
-	// The message must be the clean tool error, never a leaked wrapper syntax error.
-	if !strings.Contains(err.Error(), "one statement") {
-		t.Errorf("want a clear 'one statement' message, got: %v", err)
-	}
-	if strings.Contains(err.Error(), "LIMIT") {
-		t.Errorf("error must not leak the injected LIMIT wrapper: %v", err)
+		t.Errorf("column d must be typed Decimal, got %q", res.ColumnTypes[1])
 	}
 }
 
@@ -150,31 +190,36 @@ func TestRunQuery_SmallStatements(t *testing.T) {
 	}
 }
 
-func TestRunQuery_RejectsWrites(t *testing.T) {
-	conn := testsupport.Start(t)
+// run_query gates on row-returning statements: a write is rejected up front and
+// must NOT execute (the driver's Query path would otherwise perform the INSERT
+// and then error on the empty result). Writes belong on run_statement.
+func TestRunQuery_RejectsWriteWithoutExecuting(t *testing.T) {
+	conn, db := testsupport.Database(t)
 	ctx := context.Background()
-	for _, sql := range []string{"INSERT INTO t VALUES (1)", "DROP TABLE t", "CREATE TABLE t (x UInt8) ENGINE=Memory"} {
-		if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: sql}); err == nil {
-			t.Errorf("%q should be rejected by the allowlist", sql)
-		}
+	if err := conn.Exec(ctx, "CREATE TABLE "+db+".t (x UInt8) ENGINE=Memory"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	_, _, err := runQuery(ctx, conn, runQueryArgs{SQL: "INSERT INTO " + db + ".t VALUES (1)"})
+	if err == nil {
+		t.Fatal("an INSERT via run_query should be rejected")
+	}
+	if !strings.Contains(err.Error(), "run_statement") {
+		t.Errorf("rejection should point to run_statement, got: %v", err)
+	}
+	// The write must not have happened.
+	var n uint64
+	if err := conn.QueryRow(ctx, "SELECT count() FROM "+db+".t").Scan(&n); err != nil || n != 0 {
+		t.Errorf("rejected write must not execute: count=%d err=%v", n, err)
 	}
 }
 
-func TestRunQuery_RejectsOutputClauses(t *testing.T) {
+// The FORMAT/OUTFILE rejection is unit-tested in gate_test.go; this needs a live
+// server only to prove the false-positive guard — a function prefixed with
+// "format" must execute, not be mistaken for a FORMAT clause.
+func TestRunQuery_FormatPrefixedFunctionRuns(t *testing.T) {
 	conn := testsupport.Start(t)
-	ctx := context.Background()
-	for _, sql := range []string{"SELECT 1 FORMAT JSON", "SELECT 1 INTO OUTFILE '/tmp/x'"} {
-		_, _, err := runQuery(ctx, conn, runQueryArgs{SQL: sql})
-		if err == nil {
-			t.Errorf("%q should be rejected", sql)
-			continue
-		}
-		if !strings.Contains(err.Error(), "not supported") {
-			t.Errorf("%q: want clean 'not supported' msg, got: %v", sql, err)
-		}
-	}
-	// A column named format must still WORK (not be rejected).
-	if _, _, err := runQuery(ctx, conn, runQueryArgs{SQL: "SELECT formatDateTime(now(),'%Y') AS y"}); err != nil {
+	if _, _, err := runQuery(context.Background(), conn, runQueryArgs{SQL: "SELECT formatDateTime(now(),'%Y') AS y"}); err != nil {
 		t.Errorf("formatDateTime should work, got: %v", err)
 	}
 }
