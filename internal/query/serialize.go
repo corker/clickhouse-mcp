@@ -69,26 +69,73 @@ func ToJSONValue(v any, dbType string) any {
 }
 
 // isDateOnly reports whether a ClickHouse type name is a calendar date (no time
-// component), possibly wrapped in Array/Nullable/LowCardinality.
+// component). The caller unwraps container types first, so this sees a leaf type.
 func isDateOnly(dbType string) bool {
-	t := unwrapType(dbType)
+	t := strings.TrimSpace(dbType)
 	return t == "Date" || t == "Date32"
 }
 
-// unwrapType strips Array(...)/Nullable(...)/LowCardinality(...) wrappers to the
-// innermost element type name.
-func unwrapType(dbType string) string {
-	for {
-		open := strings.IndexByte(dbType, '(')
-		switch {
-		case open < 0:
-			return dbType
-		case strings.HasSuffix(dbType, ")"):
-			dbType = dbType[open+1 : len(dbType)-1]
-		default:
-			return dbType
+// typeName returns the outer type constructor of a ClickHouse type ("Array" for
+// "Array(Date)", "Date" for "Date"), and its argument list verbatim ("Date", or
+// "String, Date" for a Map). A leaf type has an empty arg string.
+func typeName(dbType string) (name, args string) {
+	dbType = strings.TrimSpace(dbType)
+	open := strings.IndexByte(dbType, '(')
+	if open < 0 || !strings.HasSuffix(dbType, ")") {
+		return dbType, ""
+	}
+	return dbType[:open], dbType[open+1 : len(dbType)-1]
+}
+
+// splitTopLevel splits a ClickHouse type-argument list on commas that are not
+// nested inside parens, so "String, Map(String, Date)" yields the two arguments
+// rather than three. Element names on named-tuple fields are left attached.
+func splitTopLevel(args string) []string {
+	var out []string
+	depth, start := 0, 0
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				out = append(out, strings.TrimSpace(args[start:i]))
+				start = i + 1
+			}
 		}
 	}
+	if s := strings.TrimSpace(args[start:]); s != "" {
+		out = append(out, s)
+	}
+	return out
+}
+
+// elemType strips a single wrapping layer (Array/Nullable/LowCardinality) to the
+// element type; other types (or leaves) are returned unchanged.
+func elemType(dbType string) string {
+	switch name, args := typeName(dbType); name {
+	case "Array", "Nullable", "LowCardinality":
+		return args
+	default:
+		return dbType
+	}
+}
+
+// fieldType strips an optional "name " prefix from a named-tuple field so only
+// the type remains ("d Date" -> "Date"). A leading quoted or bare identifier
+// followed by a space and a type is treated as a name.
+func fieldType(field string) string {
+	if sp := strings.IndexByte(field, ' '); sp > 0 {
+		// A named field is "<ident> <type>"; an unnamed field like "UInt8" has no
+		// space. Multi-word types (there are none in ClickHouse leaf names) would
+		// break this, but ClickHouse tuple fields are either "name Type" or "Type".
+		if rest := strings.TrimSpace(field[sp+1:]); rest != "" && !strings.ContainsAny(field[:sp], "(") {
+			return rest
+		}
+	}
+	return field
 }
 
 func reflectValue(rv reflect.Value, dbType string) any {
@@ -97,25 +144,72 @@ func reflectValue(rv reflect.Value, dbType string) any {
 		if rv.IsNil() {
 			return nil
 		}
-		return ToJSONValue(rv.Elem().Interface(), dbType)
+		// Nullable(X): the value carries X's type.
+		return ToJSONValue(rv.Elem().Interface(), elemType(dbType))
 	case reflect.Slice, reflect.Array:
+		// Array(X): every element is X. An unnamed Tuple also scans to a slice —
+		// then each position has its own type.
+		name, args := typeName(dbType)
+		var elemTypes []string
+		if name == "Tuple" {
+			elemTypes = splitTopLevel(args)
+		}
+		inner := elemType(dbType)
 		out := make([]any, rv.Len())
 		for i := 0; i < rv.Len(); i++ {
-			out[i] = ToJSONValue(rv.Index(i).Interface(), dbType)
+			t := inner
+			if i < len(elemTypes) {
+				t = fieldType(elemTypes[i])
+			}
+			out[i] = ToJSONValue(rv.Index(i).Interface(), t)
 		}
 		return out
 	case reflect.Map:
-		// JSON object keys must be strings; ClickHouse Map keys are rendered via
-		// fmt (they are typically String already).
+		// Map(K, V) — the value carries V; the key carries K (and must render as a
+		// string for a JSON object). A named Tuple also scans to a map keyed by
+		// field name, so look each field's type up by name.
+		name, args := typeName(dbType)
+		keyType, valType := "", ""
+		fieldTypes := map[string]string{}
+		switch name {
+		case "Map":
+			if kv := splitTopLevel(args); len(kv) == 2 {
+				keyType, valType = kv[0], kv[1]
+			}
+		case "Tuple":
+			for _, f := range splitTopLevel(args) {
+				if sp := strings.IndexByte(f, ' '); sp > 0 {
+					fieldTypes[f[:sp]] = strings.TrimSpace(f[sp+1:])
+				}
+			}
+		}
 		out := make(map[string]any, rv.Len())
 		for _, k := range rv.MapKeys() {
-			out[fmt.Sprintf("%v", k.Interface())] = ToJSONValue(rv.MapIndex(k).Interface(), dbType)
+			key := mapKeyString(k.Interface(), keyType)
+			vt := valType
+			if ft, ok := fieldTypes[key]; ok {
+				vt = ft
+			}
+			out[key] = ToJSONValue(rv.MapIndex(k).Interface(), vt)
 		}
 		return out
 	default:
 		// Scalars JSON encodes losslessly (int*, uint8/16/32, float*, string, bool).
 		return rv.Interface()
 	}
+}
+
+// mapKeyString renders a Map key as a JSON object key. A Date/Date32 key uses the
+// calendar-date form (not Go's default time.Time string); everything else uses
+// fmt, since ClickHouse Map keys are usually already strings or numbers.
+func mapKeyString(k any, keyType string) string {
+	if t, ok := k.(time.Time); ok {
+		if isDateOnly(keyType) {
+			return t.Format(dateLayout)
+		}
+		return t.Format(time.RFC3339Nano)
+	}
+	return fmt.Sprintf("%v", k)
 }
 
 func u64String(v uint64) string {

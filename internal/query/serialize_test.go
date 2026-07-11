@@ -12,6 +12,52 @@ import (
 
 func ptr[T any](v T) *T { return &v }
 
+func TestSplitTopLevel(t *testing.T) {
+	tests := []struct {
+		args string
+		want []string
+	}{
+		{"String, Date", []string{"String", "Date"}},
+		{"String, Map(String, Date)", []string{"String", "Map(String, Date)"}}, // comma inside Map is not a separator
+		{"Date", []string{"Date"}},
+		{"n UInt8, d Date", []string{"n UInt8", "d Date"}}, // named-tuple fields
+		{"Tuple(Date, DateTime), UInt8", []string{"Tuple(Date, DateTime)", "UInt8"}},
+		{"", nil},
+	}
+	for _, tt := range tests {
+		if got := splitTopLevel(tt.args); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("splitTopLevel(%q) = %#v, want %#v", tt.args, got, tt.want)
+		}
+	}
+}
+
+func TestTypeNameAndElemType(t *testing.T) {
+	nameCases := []struct{ in, name, args string }{
+		{"Array(Date)", "Array", "Date"},
+		{"Map(String, Date)", "Map", "String, Date"},
+		{"Date", "Date", ""},
+		{"Tuple(n UInt8, d Date)", "Tuple", "n UInt8, d Date"},
+	}
+	for _, c := range nameCases {
+		if n, a := typeName(c.in); n != c.name || a != c.args {
+			t.Errorf("typeName(%q) = (%q,%q), want (%q,%q)", c.in, n, a, c.name, c.args)
+		}
+	}
+	elemCases := []struct{ in, want string }{
+		{"Array(Date)", "Date"},
+		{"Nullable(Date)", "Date"},
+		{"LowCardinality(Date)", "Date"},
+		{"Array(Array(Date))", "Array(Date)"},      // peels exactly one layer
+		{"Map(String, Date)", "Map(String, Date)"}, // not a single-arg wrapper, unchanged
+		{"Date", "Date"},
+	}
+	for _, c := range elemCases {
+		if got := elemType(c.in); got != c.want {
+			t.Errorf("elemType(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // jsonValue builds a chcol.JSON value with one nested path set, as a scanned
 // JSON column would arrive.
 func jsonValue(path string, v any) chcol.JSON {
