@@ -64,6 +64,80 @@ func HasUnsupportedOutputClause(sql string) bool {
 	return tail != "" && isIdentifier(tail)
 }
 
+// ContainsMultipleStatements reports whether sql holds more than one statement,
+// i.e. a semicolon with real content after it. A single trailing ';' does not
+// count. Checked before Bound wraps the query, so a second statement is rejected
+// with a clear message instead of surfacing a syntax error against the injected
+// "SELECT * FROM (...) LIMIT n" wrapper — which leaks tool internals to the caller.
+//
+// Semicolons inside string/identifier literals and comments do not separate
+// statements, so they are skipped. This is a scanner, not a full parser: it
+// tracks quote and comment state, which is enough to place the real separators.
+func ContainsMultipleStatements(sql string) bool {
+	const (
+		normal = iota
+		inSingle
+		inDouble
+		inBacktick
+		inLine
+		inBlock
+	)
+	state := normal
+	for i := 0; i < len(sql); i++ {
+		c := sql[i]
+		switch state {
+		case normal:
+			switch {
+			case c == '\'':
+				state = inSingle
+			case c == '"':
+				state = inDouble
+			case c == '`':
+				state = inBacktick
+			case c == '-' && i+1 < len(sql) && sql[i+1] == '-':
+				state = inLine
+				i++
+			case c == '/' && i+1 < len(sql) && sql[i+1] == '*':
+				state = inBlock
+				i++
+			case c == ';':
+				// A separator only if anything but whitespace follows.
+				if strings.TrimSpace(sql[i+1:]) != "" {
+					return true
+				}
+			}
+		case inSingle:
+			switch c {
+			case '\\':
+				i++ // skip an escaped char inside the literal
+			case '\'':
+				state = normal
+			}
+		case inDouble:
+			switch c {
+			case '\\':
+				i++
+			case '"':
+				state = normal
+			}
+		case inBacktick:
+			if c == '`' {
+				state = normal
+			}
+		case inLine:
+			if c == '\n' {
+				state = normal
+			}
+		case inBlock:
+			if c == '*' && i+1 < len(sql) && sql[i+1] == '/' {
+				state = normal
+				i++
+			}
+		}
+	}
+	return false
+}
+
 func stripLineComments(sql string) string {
 	lines := strings.Split(sql, "\n")
 	for i, line := range lines {
@@ -143,22 +217,24 @@ type Truncation struct {
 }
 
 type Result struct {
-	Columns    []string `json:"columns" jsonschema:"column names, aligned to each row"`
-	Rows       [][]any  `json:"rows" jsonschema:"result rows as positional arrays aligned to columns; large integers and decimals are strings to avoid precision loss"`
-	Truncation          // embedded: its fields flatten into the JSON object
+	Columns     []string `json:"columns" jsonschema:"column names, aligned to each row"`
+	ColumnTypes []string `json:"column_types" jsonschema:"ClickHouse type of each column, aligned to columns; tells the caller which string values are stringified numerics (e.g. Decimal, UInt64) versus real strings"`
+	Rows        [][]any  `json:"rows" jsonschema:"result rows as positional arrays aligned to columns; large integers and decimals are strings to avoid precision loss"`
+	Truncation           // embedded: its fields flatten into the JSON object
 }
 
 // Shape drops the sentinel (displayLimit+1) row and reports truncation. When a
 // truncated result was not ordered, the subset is arbitrary and the note says so.
-func Shape(columns []string, fetched [][]any, displayLimit int, ordered bool) Result {
+func Shape(columns, columnTypes []string, fetched [][]any, displayLimit int, ordered bool) Result {
 	truncated := len(fetched) > displayLimit
 	rows := fetched
 	if truncated {
 		rows = fetched[:displayLimit]
 	}
 	r := Result{
-		Columns: columns,
-		Rows:    rows,
+		Columns:     columns,
+		ColumnTypes: columnTypes,
+		Rows:        rows,
 		Truncation: Truncation{
 			Count:     len(rows),
 			Truncated: truncated,
