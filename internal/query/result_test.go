@@ -42,9 +42,11 @@ func TestHasUnsupportedOutputClause(t *testing.T) {
 		{"SELECT 1 INTO OUTFILE '/tmp/x'", true},
 		{"SELECT 1 into outfile '/x'", true},
 		{"SELECT 1", false},
-		{"SELECT format FROM t", false},            // column named format (FROM follows, not an ident tail)
-		{"SELECT formatDateTime(x) FROM t", false}, // function prefixed with format
-		{"SELECT 'FORMAT' AS s", false},            // FORMAT inside a literal, mid-query
+		{"SELECT format FROM t", false},                  // column named format (FROM follows, not an ident tail)
+		{"SELECT formatDateTime(x) FROM t", false},       // function prefixed with format
+		{"SELECT 'FORMAT' AS s", false},                  // FORMAT inside a literal, mid-query
+		{"SELECT 1 -- FORMAT JSON", false},               // FORMAT in a trailing line comment
+		{"SELECT 1 -- trailing note\nFORMAT JSON", true}, // real clause after a comment line
 		{"SELECT number FROM system.numbers", false},
 	}
 	for _, tt := range tests {

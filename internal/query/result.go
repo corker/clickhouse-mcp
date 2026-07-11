@@ -45,7 +45,10 @@ func Classify(sql string) StmtClass {
 // cost of not catching the (invalid) case where they appear mid-statement — which
 // ClickHouse rejects anyway.
 func HasUnsupportedOutputClause(sql string) bool {
-	upper := strings.ToUpper(strings.TrimRight(strings.TrimSpace(sql), "; "))
+	// Strip -- line comments first so a trailing "-- FORMAT JSON" comment is not
+	// mistaken for an actual output clause. (String literals are not tokenized;
+	// a `--` inside a literal is rare and the fallout is only a spurious reject.)
+	upper := strings.ToUpper(strings.TrimRight(strings.TrimSpace(stripLineComments(sql)), "; "))
 	if strings.HasSuffix(upper, "INTO OUTFILE") || strings.Contains(upper, "INTO OUTFILE ") {
 		return true
 	}
@@ -60,6 +63,17 @@ func HasUnsupportedOutputClause(sql string) bool {
 	}
 	tail := strings.TrimSpace(upper[idx+len("FORMAT "):])
 	return tail != "" && isIdentifier(tail)
+}
+
+// stripLineComments removes `-- ...` comments (to end of line) from each line.
+func stripLineComments(sql string) string {
+	lines := strings.Split(sql, "\n")
+	for i, line := range lines {
+		if j := strings.Index(line, "--"); j >= 0 {
+			lines[i] = line[:j]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func isIdentifier(s string) bool {
