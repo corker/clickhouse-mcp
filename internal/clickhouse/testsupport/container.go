@@ -1,15 +1,19 @@
 //go:build integration
 
-// Package testsupport starts a real ClickHouse in a container for integration tests.
+// Package testsupport starts a real ClickHouse in a container for integration
+// tests. One container is booted per test package (via sync.Once) and shared;
+// each test gets its own isolated database via Database.
 package testsupport
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-	"github.com/testcontainers/testcontainers-go"
 	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 
 	"github.com/corker/clickhouse-mcp/internal/clickhouse"
@@ -19,11 +23,60 @@ import (
 // Pinned so integration runs are reproducible and don't drift with :latest.
 const image = "clickhouse/clickhouse-server:25.6"
 
-// Start boots a ClickHouse container and returns a live connection built through
-// the project's own clickhouse.New (so tests exercise the real connection path).
-// The container and connection are torn down via t.Cleanup.
+var (
+	once       sync.Once
+	sharedConn driver.Conn
+	sharedErr  error
+)
+
+// Start returns a connection to a shared ClickHouse container, booting it on the
+// first call within the test binary. The container lives for the whole package
+// run; do not create fixtures in the default database here — use Database for an
+// isolated one. The connection is built through the project's own clickhouse.New
+// so tests exercise the real connection path.
 func Start(t *testing.T) driver.Conn {
 	t.Helper()
+	once.Do(func() { sharedConn, sharedErr = boot() })
+	if sharedErr != nil {
+		t.Fatalf("start shared clickhouse: %v", sharedErr)
+	}
+	return sharedConn
+}
+
+// Database boots the shared container and creates a fresh database named after
+// the test (sanitized), dropped on cleanup. Use its name to qualify fixtures so
+// tests never collide on the shared container.
+func Database(t *testing.T) (conn driver.Conn, database string) {
+	t.Helper()
+	conn = Start(t)
+	database = sanitize(t.Name())
+	ctx := context.Background()
+	if err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+database); err != nil {
+		t.Fatalf("reset database %s: %v", database, err)
+	}
+	if err := conn.Exec(ctx, "CREATE DATABASE "+database); err != nil {
+		t.Fatalf("create database %s: %v", database, err)
+	}
+	t.Cleanup(func() { _ = conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+database) })
+	return conn, database
+}
+
+// sanitize turns a test name into a valid ClickHouse identifier (letters, digits,
+// underscore); subtests carry a "/" which becomes "_".
+func sanitize(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return "test_" + b.String()
+}
+
+func boot() (driver.Conn, error) {
 	ctx := context.Background()
 
 	// The module defaults CLICKHOUSE_PASSWORD to a non-empty value and requires
@@ -35,37 +88,24 @@ func Start(t *testing.T) driver.Conn {
 		tcclickhouse.WithDatabase(db),
 	)
 	if err != nil {
-		t.Fatalf("start clickhouse container: %v", err)
+		return nil, fmt.Errorf("run container: %w", err)
 	}
-	t.Cleanup(func() {
-		if err := testcontainers.TerminateContainer(ctr); err != nil {
-			t.Logf("terminate container: %v", err)
-		}
-	})
 
 	host, err := ctr.Host(ctx)
 	if err != nil {
-		t.Fatalf("container host: %v", err)
+		return nil, fmt.Errorf("container host: %w", err)
 	}
 	port, err := ctr.MappedPort(ctx, "9000/tcp")
 	if err != nil {
-		t.Fatalf("container port: %v", err)
+		return nil, fmt.Errorf("container port: %w", err)
 	}
 
-	cfg := &config.Config{
-		Host:     host,
-		Port:     int(port.Num()),
-		User:     user,
-		Password: pass,
-		Database: db,
-	}
-
+	cfg := &config.Config{Host: host, Port: int(port.Num()), User: user, Password: pass, Database: db}
 	connCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	conn, err := clickhouse.New(connCtx, cfg)
 	if err != nil {
-		t.Fatalf("connect to container: %v", err)
+		return nil, fmt.Errorf("connect: %w", err)
 	}
-	t.Cleanup(func() { _ = conn.Close() })
-	return conn
+	return conn, nil
 }

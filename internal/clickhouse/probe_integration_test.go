@@ -47,15 +47,15 @@ func TestWriteProbe_LeavesNoTable(t *testing.T) {
 // readonly=2 blocks an INSERT (the security boundary) but the ReadOnlyCapped
 // context still allows the SELECT + caps (readonly=1 would forbid the settings).
 func TestReadOnlyContext_BlocksWrite_AllowsRead(t *testing.T) {
-	conn := testsupport.Start(t)
+	conn, db := testsupport.Database(t)
 	ctx := context.Background()
 
-	if err := conn.Exec(ctx, "CREATE TABLE t (x UInt8) ENGINE=Memory"); err != nil {
+	if err := conn.Exec(ctx, "CREATE TABLE "+db+".t (x UInt8) ENGINE=Memory"); err != nil {
 		t.Fatalf("setup table: %v", err)
 	}
 
 	roCtx := chdriver.ReadOnlyContext(ctx)
-	if err := conn.Exec(roCtx, "INSERT INTO t VALUES (1)"); err == nil {
+	if err := conn.Exec(roCtx, "INSERT INTO "+db+".t VALUES (1)"); err == nil {
 		t.Fatal("INSERT under readonly=2 should be refused")
 	}
 

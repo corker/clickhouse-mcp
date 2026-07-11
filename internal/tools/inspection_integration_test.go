@@ -14,13 +14,14 @@ import (
 	"github.com/corker/clickhouse-mcp/internal/clickhouse/testsupport"
 )
 
-func seedInspectionFixture(t *testing.T, conn driver.Conn) {
+// seedOrders creates the shared "orders" table (with rows) and a view in db.
+func seedOrders(t *testing.T, conn driver.Conn, db string) {
 	t.Helper()
 	ctx := context.Background()
 	stmts := []string{
-		"CREATE TABLE default.orders (id UInt64, amount Decimal(10,2)) ENGINE=MergeTree ORDER BY id COMMENT 'customer orders'",
-		"INSERT INTO default.orders SELECT number, number FROM system.numbers LIMIT 10",
-		"CREATE VIEW default.orders_view AS SELECT id FROM default.orders",
+		fmt.Sprintf("CREATE TABLE %s.orders (id UInt64, amount Decimal(10,2)) ENGINE=MergeTree ORDER BY id COMMENT 'customer orders'", db),
+		fmt.Sprintf("INSERT INTO %s.orders SELECT number, number FROM system.numbers LIMIT 10", db),
+		fmt.Sprintf("CREATE VIEW %s.orders_view AS SELECT id FROM %s.orders", db, db),
 	}
 	for _, s := range stmts {
 		if err := conn.Exec(ctx, s); err != nil {
@@ -29,22 +30,35 @@ func seedInspectionFixture(t *testing.T, conn driver.Conn) {
 	}
 }
 
+// wideColumns builds a "c0 UInt8, c1 UInt8, ..." definition of n columns.
+func wideColumns(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "c%d UInt8", i)
+	}
+	return b.String()
+}
+
 func TestListDatabases(t *testing.T) {
 	conn := testsupport.Start(t)
 	_, out, err := listDatabases(context.Background(), conn, listDatabasesArgs{})
 	if err != nil {
 		t.Fatalf("listDatabases: %v", err)
 	}
+	// default and system always exist on the shared container.
 	if !slices.Contains(out.Databases, "default") || !slices.Contains(out.Databases, "system") {
 		t.Errorf("expected default and system in %v", out.Databases)
 	}
 }
 
 func TestListTables_Lean(t *testing.T) {
-	conn := testsupport.Start(t)
-	seedInspectionFixture(t, conn)
+	conn, db := testsupport.Database(t)
+	seedOrders(t, conn, db)
 
-	_, out, err := listTables(context.Background(), conn, listTablesArgs{Database: "default"})
+	_, out, err := listTables(context.Background(), conn, listTablesArgs{Database: db})
 	if err != nil {
 		t.Fatalf("listTables: %v", err)
 	}
@@ -60,7 +74,6 @@ func TestListTables_Lean(t *testing.T) {
 	if orders == nil || view == nil {
 		t.Fatalf("expected orders and orders_view, got %+v", out.Tables)
 	}
-	// Lean default: no columns folded.
 	if orders.Columns != nil {
 		t.Errorf("lean listing should not fold columns, got %v", orders.Columns)
 	}
@@ -97,20 +110,13 @@ func TestListDatabases_Truncation(t *testing.T) {
 
 // A single wide table's columns are capped at MaxColumnsPerTable with a signal.
 func TestListTables_ColumnCap(t *testing.T) {
-	conn := testsupport.Start(t)
+	conn, db := testsupport.Database(t)
 	ctx := context.Background()
 
-	var b strings.Builder
-	for i := 0; i < MaxColumnsPerTable+50; i++ {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "c%d UInt8", i)
-	}
-	if err := conn.Exec(ctx, "CREATE TABLE default.wide ("+b.String()+") ENGINE=Memory"); err != nil {
+	if err := conn.Exec(ctx, fmt.Sprintf("CREATE TABLE %s.wide (%s) ENGINE=Memory", db, wideColumns(MaxColumnsPerTable+50))); err != nil {
 		t.Fatalf("seed wide: %v", err)
 	}
-	_, out, err := listTables(ctx, conn, listTablesArgs{Database: "default", Table: "wide"})
+	_, out, err := listTables(ctx, conn, listTablesArgs{Database: db, Table: "wide"})
 	if err != nil {
 		t.Fatalf("list wide: %v", err)
 	}
@@ -122,10 +128,10 @@ func TestListTables_ColumnCap(t *testing.T) {
 }
 
 func TestListTables_SingleTableSchema(t *testing.T) {
-	conn := testsupport.Start(t)
-	seedInspectionFixture(t, conn)
+	conn, db := testsupport.Database(t)
+	seedOrders(t, conn, db)
 
-	_, out, err := listTables(context.Background(), conn, listTablesArgs{Database: "default", Table: "orders"})
+	_, out, err := listTables(context.Background(), conn, listTablesArgs{Database: db, Table: "orders"})
 	if err != nil {
 		t.Fatalf("listTables table=: %v", err)
 	}
@@ -146,7 +152,7 @@ func TestListTables_ArgErrors(t *testing.T) {
 		name string
 		args listTablesArgs
 	}{
-		{"missing table", listTablesArgs{Database: "default", Table: "nope"}},
+		{"missing table", listTablesArgs{Database: "default", Table: "nope_no_such"}},
 		{"missing database", listTablesArgs{Database: "does_not_exist"}},
 		{"wrong-case database", listTablesArgs{Database: "DEFAULT"}}, // names are case-sensitive
 		{"database required", listTablesArgs{}},
@@ -163,12 +169,8 @@ func TestListTables_ArgErrors(t *testing.T) {
 // A real-but-empty database returns [] without error — distinct from the missing
 // database above, which errors.
 func TestListTables_EmptyDatabaseIsNotAnError(t *testing.T) {
-	conn := testsupport.Start(t)
-	ctx := context.Background()
-	if err := conn.Exec(ctx, "CREATE DATABASE IF NOT EXISTS empty_db"); err != nil {
-		t.Fatalf("create empty_db: %v", err)
-	}
-	_, out, err := listTables(ctx, conn, listTablesArgs{Database: "empty_db"})
+	conn, db := testsupport.Database(t) // Database creates it empty
+	_, out, err := listTables(context.Background(), conn, listTablesArgs{Database: db})
 	if err != nil {
 		t.Errorf("existing-but-empty database should not error, got: %v", err)
 	}
@@ -180,33 +182,38 @@ func TestListTables_EmptyDatabaseIsNotAnError(t *testing.T) {
 // A database with more tables than the limit is truncated with a signal, so a
 // large database cannot flood the caller's context. table= ignores the limit.
 func TestListTables_Truncation(t *testing.T) {
-	conn := testsupport.Start(t)
+	conn, db := testsupport.Database(t)
 	ctx := context.Background()
 
-	// system has many tables; a low limit must truncate and report it.
-	_, out, err := listTables(ctx, conn, listTablesArgs{Database: "system", Limit: 5})
+	// Seed more tables than the limit.
+	for i := 0; i < 8; i++ {
+		if err := conn.Exec(ctx, fmt.Sprintf("CREATE TABLE %s.t%d (x UInt8) ENGINE=Memory", db, i)); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	_, out, err := listTables(ctx, conn, listTablesArgs{Database: db, Limit: 5})
 	if err != nil {
-		t.Fatalf("list system: %v", err)
+		t.Fatalf("list: %v", err)
 	}
 	if len(out.Tables) != 5 || !out.Truncated || out.Limit != 5 || out.Note == "" {
 		t.Errorf("expected 5 tables truncated with a note, got %d truncated=%v note=%q", len(out.Tables), out.Truncated, out.Note)
 	}
 
 	// table= addresses one table and must ignore the browse limit.
-	if err := conn.Exec(ctx, "CREATE TABLE default.zz (a UInt8, b UInt8) ENGINE=Memory"); err != nil {
-		t.Fatalf("seed: %v", err)
+	if err := conn.Exec(ctx, fmt.Sprintf("CREATE TABLE %s.zz (a UInt8, b UInt8) ENGINE=Memory", db)); err != nil {
+		t.Fatalf("seed zz: %v", err)
 	}
-	_, one, err := listTables(ctx, conn, listTablesArgs{Database: "default", Table: "zz", Limit: 1})
+	_, one, err := listTables(ctx, conn, listTablesArgs{Database: db, Table: "zz", Limit: 1})
 	if err != nil || len(one.Tables) != 1 || one.Truncated || len(one.Tables[0].Columns) != 2 {
 		t.Errorf("table= should ignore limit and return full schema: tables=%d truncated=%v err=%v", len(one.Tables), one.Truncated, err)
 	}
 }
 
 func TestListTables_IncludeColumns(t *testing.T) {
-	conn := testsupport.Start(t)
-	seedInspectionFixture(t, conn)
+	conn, db := testsupport.Database(t)
+	seedOrders(t, conn, db)
 
-	_, out, err := listTables(context.Background(), conn, listTablesArgs{Database: "default", Columns: true})
+	_, out, err := listTables(context.Background(), conn, listTablesArgs{Database: db, Columns: true})
 	if err != nil {
 		t.Fatalf("listTables include_columns: %v", err)
 	}
@@ -219,7 +226,6 @@ func TestListTables_IncludeColumns(t *testing.T) {
 			t.Errorf("include_columns should fold schema for %q, got none", out.Tables[i].Name)
 		}
 	}
-	// Assert the actual folded schema, not just that some columns exist.
 	if orders == nil || len(orders.Columns) != 2 ||
 		orders.Columns[0].Name != "id" || orders.Columns[0].Type != "UInt64" {
 		t.Errorf("orders should fold to {id UInt64, amount Decimal}, got %+v", orders)
@@ -227,23 +233,15 @@ func TestListTables_IncludeColumns(t *testing.T) {
 }
 
 // The per-table column cap must fire on the include_columns fold path too, not
-// only via table= — the two paths share tableColumns, and this pins that the
-// folded loop sets ColumnsTruncated per table.
+// only via table=.
 func TestListTables_IncludeColumns_ColumnCap(t *testing.T) {
-	conn := testsupport.Start(t)
+	conn, db := testsupport.Database(t)
 	ctx := context.Background()
 
-	var b strings.Builder
-	for i := 0; i < MaxColumnsPerTable+50; i++ {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "c%d UInt8", i)
-	}
-	if err := conn.Exec(ctx, "CREATE TABLE default.wide ("+b.String()+") ENGINE=Memory"); err != nil {
+	if err := conn.Exec(ctx, fmt.Sprintf("CREATE TABLE %s.wide (%s) ENGINE=Memory", db, wideColumns(MaxColumnsPerTable+50))); err != nil {
 		t.Fatalf("seed wide: %v", err)
 	}
-	_, out, err := listTables(ctx, conn, listTablesArgs{Database: "default", Columns: true})
+	_, out, err := listTables(ctx, conn, listTablesArgs{Database: db, Columns: true})
 	if err != nil {
 		t.Fatalf("include_columns: %v", err)
 	}
@@ -259,9 +257,8 @@ func TestListTables_IncludeColumns_ColumnCap(t *testing.T) {
 	}
 }
 
-// include_columns uses a tighter default limit than a lean listing (folding every
-// column of every table is a bigger payload), so a large database truncates
-// rather than dumping every column. An explicit limit still overrides.
+// include_columns uses a tighter default limit than a lean listing. system has
+// many tables, so the folded default truncates while the lean default does not.
 func TestListTables_IncludeColumnsTighterDefault(t *testing.T) {
 	conn := testsupport.Start(t)
 	ctx := context.Background()
@@ -274,7 +271,6 @@ func TestListTables_IncludeColumnsTighterDefault(t *testing.T) {
 		t.Errorf("folded default should cap at %d and truncate, got %d truncated=%v",
 			DefaultFoldedTableLimit, len(folded.Tables), folded.Truncated)
 	}
-	// The lean listing keeps the larger default (not clamped by include_columns).
 	_, lean, _ := listTables(ctx, conn, listTablesArgs{Database: "system"})
 	if len(lean.Tables) <= DefaultFoldedTableLimit {
 		t.Errorf("lean listing should not be clamped to the folded limit, got %d", len(lean.Tables))
