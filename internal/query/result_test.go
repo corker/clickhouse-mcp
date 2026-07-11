@@ -101,6 +101,13 @@ func TestContainsMultipleStatements(t *testing.T) {
 		{"SELECT `a;b` FROM t", false},                               // semicolon in a backtick identifier
 		{"SELECT 'a'; DROP TABLE t", true},                           // real separator after a literal closes
 		{"SELECT '\\';' AS s", false},                                // escaped quote keeps the literal open
+		// ClickHouse's doubled-escaping ('' for a quote, `` for a backtick): the
+		// scanner stays in sync by parity, or a ';' after a doubled literal reads
+		// as a false negative and the silent-partial-write reopens.
+		{"SELECT 'it''s' AS s", false},                                       // '' inside a single literal
+		{"SELECT 'a''; b' AS s", false},                                      // ';' inside a doubled-quote literal
+		{"INSERT INTO t VALUES ('x'';''y'); INSERT INTO t VALUES (1)", true}, // real 2nd stmt after a doubled-quote literal
+		{"SELECT `a``b` FROM t; DROP TABLE t", true},                         // real 2nd stmt after a doubled-backtick identifier
 	}
 	for _, tt := range tests {
 		if got := ContainsMultipleStatements(tt.sql); got != tt.want {
