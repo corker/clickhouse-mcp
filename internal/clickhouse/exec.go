@@ -27,6 +27,8 @@ func ExecWritten(ctx context.Context, conn driver.Conn, sql string) (rowsWritten
 		wrote.Add(p.WroteRows)
 	}))
 	if err := conn.Exec(pctx, sql); err != nil {
+		// Drop any partial count on error: a failed statement must not report an
+		// honest-looking nonzero rows-written.
 		return 0, err
 	}
 	return wrote.Load(), nil
