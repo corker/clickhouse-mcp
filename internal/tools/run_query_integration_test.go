@@ -78,6 +78,20 @@ func TestRunQuery_ArrayOfBigInts(t *testing.T) {
 	}
 }
 
+func TestRunQuery_VariantBigInt(t *testing.T) {
+	conn := testsupport.Start(t)
+	// Variant(UInt64, String) holding a >2^53 value must serialize as a string,
+	// not a lossy JSON number (the LSP re-audit finding).
+	sql := "SELECT CAST(toUInt64(18446744073709551615) AS Variant(UInt64, String)) AS v SETTINGS allow_experimental_variant_type=1"
+	_, res, err := runQuery(context.Background(), conn, runQueryArgs{SQL: sql})
+	if err != nil {
+		t.Skipf("Variant unsupported on this server: %v", err)
+	}
+	if got := res.Rows[0][0]; got != "18446744073709551615" {
+		t.Errorf("Variant(UInt64) should serialize as a string, got %#v", got)
+	}
+}
+
 func TestRunQuery_SmallStatements(t *testing.T) {
 	conn := testsupport.Start(t)
 	ctx := context.Background()

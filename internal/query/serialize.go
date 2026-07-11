@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/chcol"
 	"github.com/shopspring/decimal"
 )
 
@@ -47,6 +48,20 @@ func ToJSONValue(v any) any {
 			out[i] = int(b)
 		}
 		return out
+	case chcol.Variant:
+		// Variant/Dynamic (Dynamic is an alias of Variant) wrap an opaque value;
+		// unwrap and recurse so a big-int inside still becomes a string.
+		if x.Nil() {
+			return nil
+		}
+		return ToJSONValue(x.Any())
+	case chcol.JSON:
+		return ToJSONValue(x.NestedMap())
+	case *chcol.JSON:
+		if x == nil {
+			return nil
+		}
+		return ToJSONValue(x.NestedMap())
 	default:
 		return reflectValue(reflect.ValueOf(v))
 	}
