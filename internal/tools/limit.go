@@ -16,8 +16,8 @@ func resolveTableLimit(argLimit int, folded bool) int {
 	return DefaultTableLimit
 }
 
-// resolveLimit returns argLimit when positive, else def. Used where there is a
-// single default (databases, columns), not the tiered table case.
+// resolveLimit returns argLimit when positive, else def — the flat (non-tiered)
+// counterpart to resolveTableLimit.
 func resolveLimit(argLimit, def int) int {
 	if argLimit > 0 {
 		return argLimit
