@@ -2,10 +2,9 @@ package tools
 
 import "fmt"
 
-// resolveTableLimit picks the row limit for a table listing. A caller-supplied
-// positive limit wins; otherwise the default is tiered — folding every table's
-// columns (include_columns) uses a much tighter default than a lean listing,
-// since each folded table costs many columns.
+// resolveTableLimit tiers the default: folding every table's columns
+// (include_columns) uses a much tighter default than a lean listing, since each
+// folded table costs many columns. A caller's positive limit always wins.
 func resolveTableLimit(argLimit int, folded bool) int {
 	if argLimit > 0 {
 		return argLimit
@@ -16,8 +15,6 @@ func resolveTableLimit(argLimit int, folded bool) int {
 	return DefaultTableLimit
 }
 
-// resolveLimit returns argLimit when positive, else def — the flat (non-tiered)
-// counterpart to resolveTableLimit.
 func resolveLimit(argLimit, def int) int {
 	if argLimit > 0 {
 		return argLimit
