@@ -12,7 +12,6 @@ import (
 	"github.com/corker/clickhouse-mcp/internal/config"
 )
 
-// New opens a native ClickHouse connection and verifies it with a ping.
 func New(ctx context.Context, cfg *config.Config) (driver.Conn, error) {
 	opts := &clickhouse.Options{
 		Addr: []string{fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)},

@@ -10,6 +10,14 @@ linters:
     - unused
     - revive
     - gosec
+  settings:
+    revive:
+      rules:
+        # Package-level doc comments are kept; per-symbol doc comments on
+        # exported identifiers are not required — names carry the meaning.
+        - name: package-comments
+        - name: exported
+          disabled: true
 
 formatters:
   enable:
