@@ -259,3 +259,33 @@ func TestLoad_BrokerProviderErrors(t *testing.T) {
 		})
 	}
 }
+
+// The google provider derives fixed endpoints (no tenant in the URL) from the
+// client id/secret alone, defaulting the audience to the client id.
+func TestLoad_BrokerGoogleProvider(t *testing.T) {
+	setEnv(t, map[string]string{
+		"MCP_AUTH_MODE":        "broker",
+		"MCP_TRANSPORT":        "http",
+		"MCP_BROKER_PROVIDER":  "google",
+		"GOOGLE_CLIENT_ID":     "g-client",
+		"GOOGLE_CLIENT_SECRET": "g-secret",
+		"MCP_PUBLIC_URL":       "https://mcp.example",
+	})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("google provider should load with client id/secret only: %v", err)
+	}
+	o, b := cfg.Server.OIDC, cfg.Server.Broker
+	if o.Issuer != "https://accounts.google.com" {
+		t.Errorf("google issuer wrong: %q", o.Issuer)
+	}
+	if o.ResourceURI != "g-client" {
+		t.Errorf("audience should default to the client id, got %q", o.ResourceURI)
+	}
+	if b.UpstreamAuthURL != "https://accounts.google.com/o/oauth2/v2/auth" || b.UpstreamTokenURL != "https://oauth2.googleapis.com/token" {
+		t.Errorf("google endpoints not derived: auth=%q token=%q", b.UpstreamAuthURL, b.UpstreamTokenURL)
+	}
+	if b.ClientID != "g-client" || b.ClientSecret != "g-secret" {
+		t.Errorf("client creds not carried from GOOGLE_* vars: %+v", b)
+	}
+}

@@ -19,11 +19,13 @@ const resourceURI = "https://mcp.example"
 func newTestVerifier(t *testing.T, fi *fakeIssuer, requiredClaim, requiredValue string) *Verifier {
 	t.Helper()
 	v, err := NewVerifier(context.Background(), config.OIDCConfig{
-		Issuer:        fi.issuerURL(),
-		ResourceURI:   resourceURI,
-		IdentityClaim: "email",
-		RequiredClaim: requiredClaim,
-		RequiredValue: requiredValue,
+		Issuer:      fi.issuerURL(),
+		ResourceURI: resourceURI,
+		AccessPolicy: config.AccessPolicy{
+			IdentityClaim: "email",
+			RequiredClaim: requiredClaim,
+			RequiredValue: requiredValue,
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)

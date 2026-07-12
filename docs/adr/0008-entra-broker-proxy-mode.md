@@ -78,7 +78,15 @@ the operator hand-wires as a generic OAuth passthrough:
 | Provider | Operator sets | Broker derives |
 | --- | --- | --- |
 | `entra` | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `MCP_PUBLIC_URL`, allowed redirect hosts | issuer `…/{tenant}/v2.0`; authorize `…/{tenant}/oauth2/v2.0/authorize`; token `…/{tenant}/oauth2/v2.0/token`; **audience defaults to `AZURE_CLIENT_ID`** |
+| `google` | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `MCP_PUBLIC_URL`, allowed redirect hosts | issuer `accounts.google.com`; authorize/token (fixed Google endpoints); **audience defaults to the client id** |
 | `generic` (default) | `OIDC_ISSUER`, `OIDC_AUTHORIZE_URL`, `OIDC_TOKEN_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `MCP_RESOURCE_URI`, `MCP_PUBLIC_URL` | nothing — every endpoint is explicit (for Keycloak/Okta/Auth0 fronted through the broker) |
+
+Each named provider owns its own audience-default policy (a per-provider function, not one shared
+line), so a future provider whose `aud` is operator-configured rather than the client id cannot
+silently inherit the wrong default. Adding a provider is one self-contained `derive*` function behind
+the dispatch switch — no change to the generic loaders. **Only Entra strictly *requires* the broker**
+(it alone lacks DCR and spec metadata); Google and other DCR-capable IdPs also work in plain `bearer`
+mode, and the `google` broker provider is offered for operators who prefer a uniform broker flow.
 
 **Why the audience default matters (a real trap the generic path hides).** A Microsoft Entra **v2.0
 access token stamps `aud` = the application (client) ID** (a GUID), not the server's URL, unless the
@@ -104,6 +112,20 @@ fronted by hand-wiring the URLs. No second component either way.
 - **Allowlist of client redirect URIs passed through to Entra** — rejected: requires every client
   callback registered in Entra and multi-URI Entra config; less smooth and larger open-redirect
   surface than fixed-redirect + signed state.
+- **Platform-fronted auth (Azure Container Apps / App Service EasyAuth) as a distinct auth mode** —
+  *considered and deferred.* In this topology the platform's auth sidecar terminates OAuth before the
+  request reaches the server, injecting the identity in an `X-MS-CLIENT-PRINCIPAL` header (base64 JSON
+  claims; the platform strips any client-supplied copy, so its presence is the trust boundary). The
+  server would trust that principal and apply the access gate — no broker, no token validation. This
+  is a real pattern in the surrounding estate (the `clickhouse-proxy` service uses it), and a working
+  gate was prototyped. **Deferred because the battle-tested MCP servers (mcp-trino, mcp-tesseract) do
+  *not* use it** — they run the bare-Entra broker this ADR describes — and no deployment of this
+  server needs platform-fronted auth today. Building it now would be speculative infrastructure. Notes
+  for if it is revived: EasyAuth's default claims mapping emits email under the WS-Federation URI
+  `…/ws/2005/05/identity/claims/emailaddress` (not `email`), so identity resolution must alias the
+  mapped URIs; it requires the container app set to *Require authentication* (so only authenticated
+  requests arrive); and it cannot populate the SDK's session `UserID` (unexported), so session-hijack
+  binding relies on the sidecar re-authenticating every request instead.
 
 ## Consequences
 

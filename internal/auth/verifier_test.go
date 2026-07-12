@@ -1,6 +1,10 @@
 package auth
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/corker/clickhouse-mcp/internal/config"
+)
 
 func TestAccessAllowed(t *testing.T) {
 	tests := []struct {
@@ -43,9 +47,8 @@ func TestIdentity(t *testing.T) {
 		{"trims the returned value", "email", map[string]any{"email": " a@b.c "}, "a@b.c"},
 	}
 	for _, tt := range tests {
-		v := &Verifier{}
-		v.cfg.IdentityClaim = tt.configClaim
-		if got := v.identity(tt.claims); got != tt.want {
+		policy := config.AccessPolicy{IdentityClaim: tt.configClaim}
+		if got := identity(policy, tt.claims); got != tt.want {
 			t.Errorf("%s: identity = %q, want %q", tt.name, got, tt.want)
 		}
 	}

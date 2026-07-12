@@ -75,6 +75,20 @@ type BrokerConfig struct {
 	Scopes []string
 }
 
+// AccessPolicy maps a token's claims to an identity and an allow/deny decision. It
+// is separated from the token-validation settings (issuer, resource URI) because the
+// identity + gating step is independent of how the token was validated.
+type AccessPolicy struct {
+	// IdentityClaim names the claim used as the user's identity (default email,
+	// then preferred_username).
+	IdentityClaim string
+	// RequiredClaim/RequiredValue gate access: the RequiredClaim must contain
+	// RequiredValue. Empty RequiredClaim means authenticate-only (no access gate) —
+	// every authenticated principal is allowed.
+	RequiredClaim string
+	RequiredValue string
+}
+
 // OIDCConfig holds bearer-token validation settings (ADR-0007/0003). Names match
 // the CONTEXT.md glossary.
 type OIDCConfig struct {
@@ -84,14 +98,8 @@ type OIDCConfig struct {
 	// ResourceURI is this server's canonical identifier; a token's aud must equal
 	// it (RFC 8707), so a token minted for another service cannot be replayed here.
 	ResourceURI string
-	// IdentityClaim names the token claim used as the user's identity (default
-	// email, then preferred_username).
-	IdentityClaim string
-	// RequiredClaim/RequiredValue gate access: the token's RequiredClaim must
-	// contain RequiredValue. Empty RequiredClaim means authenticate-only (no
-	// access gate) — every valid token from the issuer is allowed.
-	RequiredClaim string
-	RequiredValue string
+	// AccessPolicy (identity claim + access gate) is applied after token validation.
+	AccessPolicy
 }
 
 func Load() (*Config, error) {
@@ -186,36 +194,76 @@ type derivedProvider struct {
 	ClientSecret string
 }
 
-// deriveProvider reads MCP_BROKER_PROVIDER and, for entra, derives the issuer,
-// authorize/token endpoints, and audience (defaulting to the client id — an Entra
-// v2.0 access token's aud is the app id, not the server URL) from AZURE_TENANT_ID.
-// Returns nil for the generic provider, leaving every endpoint explicit.
+// deriveProvider dispatches on MCP_BROKER_PROVIDER. generic returns nil (every
+// endpoint explicit); each named provider derives its own endpoints and, crucially,
+// its own audience default — the aud rule is per-provider policy (Entra/Google stamp
+// aud = the client id), not a shared constant, so a provider whose aud differs
+// cannot inherit the wrong default.
 func deriveProvider() (*derivedProvider, error) {
 	provider := strings.TrimSpace(envString("MCP_BROKER_PROVIDER", "generic"))
 	switch provider {
 	case "generic":
 		return nil, nil
 	case "entra":
-		tenant := strings.TrimSpace(envString("AZURE_TENANT_ID", ""))
-		clientID := strings.TrimSpace(envString("AZURE_CLIENT_ID", ""))
-		clientSecret := strings.TrimSpace(envString("AZURE_CLIENT_SECRET", ""))
-		for k, v := range map[string]string{"AZURE_TENANT_ID": tenant, "AZURE_CLIENT_ID": clientID, "AZURE_CLIENT_SECRET": clientSecret} {
-			if v == "" {
-				return nil, fmt.Errorf("%s is required when MCP_BROKER_PROVIDER=entra", k)
-			}
-		}
-		base := "https://login.microsoftonline.com/" + tenant
-		return &derivedProvider{
-			Issuer:       base + "/v2.0",
-			ResourceURI:  strings.TrimSpace(envString("MCP_RESOURCE_URI", clientID)),
-			AuthorizeURL: base + "/oauth2/v2.0/authorize",
-			TokenURL:     base + "/oauth2/v2.0/token",
-			ClientID:     clientID,
-			ClientSecret: clientSecret,
-		}, nil
+		return deriveEntra()
+	case "google":
+		return deriveGoogle()
 	default:
-		return nil, fmt.Errorf("MCP_BROKER_PROVIDER: unknown provider %q (want entra or generic)", provider)
+		return nil, fmt.Errorf("MCP_BROKER_PROVIDER: unknown provider %q (want entra, google, or generic)", provider)
 	}
+}
+
+// requireEnv reads and trims the named env vars, failing if any is empty. The
+// message names the provider so an operator knows which var set to complete.
+func requireEnv(provider string, keys ...string) (map[string]string, error) {
+	out := make(map[string]string, len(keys))
+	for _, k := range keys {
+		v := strings.TrimSpace(envString(k, ""))
+		if v == "" {
+			return nil, fmt.Errorf("%s is required when MCP_BROKER_PROVIDER=%s", k, provider)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// deriveEntra derives the Entra endpoints from the tenant id. An Entra v2.0 access
+// token's aud is the app (client) id, not the server URL, so the audience defaults
+// to the client id (overridable via MCP_RESOURCE_URI for a custom api:// scope).
+func deriveEntra() (*derivedProvider, error) {
+	env, err := requireEnv("entra", "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
+	if err != nil {
+		return nil, err
+	}
+	clientID := env["AZURE_CLIENT_ID"]
+	base := "https://login.microsoftonline.com/" + env["AZURE_TENANT_ID"]
+	return &derivedProvider{
+		Issuer:       base + "/v2.0",
+		ResourceURI:  strings.TrimSpace(envString("MCP_RESOURCE_URI", clientID)),
+		AuthorizeURL: base + "/oauth2/v2.0/authorize",
+		TokenURL:     base + "/oauth2/v2.0/token",
+		ClientID:     clientID,
+		ClientSecret: env["AZURE_CLIENT_SECRET"],
+	}, nil
+}
+
+// deriveGoogle derives the Google endpoints (fixed — no tenant in the URL). A Google
+// access token's aud is the client id, so the audience defaults to it (overridable
+// via MCP_RESOURCE_URI).
+func deriveGoogle() (*derivedProvider, error) {
+	env, err := requireEnv("google", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")
+	if err != nil {
+		return nil, err
+	}
+	clientID := env["GOOGLE_CLIENT_ID"]
+	return &derivedProvider{ //nolint:gosec // G101 false positive: these are public Google OAuth endpoint URLs, not credentials
+		Issuer:       "https://accounts.google.com",
+		ResourceURI:  strings.TrimSpace(envString("MCP_RESOURCE_URI", clientID)),
+		AuthorizeURL: "https://accounts.google.com/o/oauth2/v2/auth",
+		TokenURL:     "https://oauth2.googleapis.com/token",
+		ClientID:     clientID,
+		ClientSecret: env["GOOGLE_CLIENT_SECRET"],
+	}, nil
 }
 
 // loadOIDC reads the bearer-token settings. Issuer and resource URI are required
@@ -235,16 +283,27 @@ func loadOIDC(derived *derivedProvider) (OIDCConfig, error) {
 	if resourceURI == "" {
 		return OIDCConfig{}, fmt.Errorf("MCP_RESOURCE_URI is required when MCP_AUTH_MODE=bearer (the audience a token must carry)")
 	}
-	requiredClaim := strings.TrimSpace(envString("OIDC_REQUIRED_CLAIM", ""))
-	requiredValue := envString("OIDC_REQUIRED_VALUE", "")
-	// A gate claim with no value is incoherent — it would deny every legitimate
-	// token — so require both or neither rather than silently locking everyone out.
-	if requiredClaim != "" && requiredValue == "" {
-		return OIDCConfig{}, fmt.Errorf("OIDC_REQUIRED_VALUE is required when OIDC_REQUIRED_CLAIM is set")
+	policy, err := loadAccessPolicy()
+	if err != nil {
+		return OIDCConfig{}, err
 	}
 	return OIDCConfig{
-		Issuer:        issuer,
-		ResourceURI:   resourceURI,
+		Issuer:       issuer,
+		ResourceURI:  resourceURI,
+		AccessPolicy: policy,
+	}, nil
+}
+
+// loadAccessPolicy reads the identity claim (default email) and the optional access
+// gate. A gate claim with no value is incoherent — it would deny every legitimate
+// principal — so require both or neither rather than silently locking everyone out.
+func loadAccessPolicy() (AccessPolicy, error) {
+	requiredClaim := strings.TrimSpace(envString("OIDC_REQUIRED_CLAIM", ""))
+	requiredValue := envString("OIDC_REQUIRED_VALUE", "")
+	if requiredClaim != "" && requiredValue == "" {
+		return AccessPolicy{}, fmt.Errorf("OIDC_REQUIRED_VALUE is required when OIDC_REQUIRED_CLAIM is set")
+	}
+	return AccessPolicy{
 		IdentityClaim: envString("OIDC_IDENTITY_CLAIM", "email"),
 		RequiredClaim: requiredClaim,
 		RequiredValue: requiredValue,
