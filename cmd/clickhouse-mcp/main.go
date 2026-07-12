@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -12,8 +13,10 @@ import (
 	"syscall"
 	"time"
 
+	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/corker/clickhouse-mcp/internal/auth"
 	"github.com/corker/clickhouse-mcp/internal/clickhouse"
 	"github.com/corker/clickhouse-mcp/internal/config"
 	"github.com/corker/clickhouse-mcp/internal/server"
@@ -38,13 +41,16 @@ func main() {
 
 	switch cfg.Server.Transport {
 	case config.TransportHTTP:
-		var ln net.Listener
-		ln, err = net.Listen("tcp", cfg.Server.HTTPAddr)
-		if err != nil {
-			log.Fatalf("http listen on %s: %v", cfg.Server.HTTPAddr, err)
+		mw, mwErr := authMiddleware(ctx, cfg.Server)
+		if mwErr != nil {
+			log.Fatalf("auth: %v", mwErr)
 		}
-		log.Printf("serving MCP over HTTP on %s", ln.Addr())
-		err = runHTTP(ctx, s, ln)
+		ln, lnErr := net.Listen("tcp", cfg.Server.HTTPAddr)
+		if lnErr != nil {
+			log.Fatalf("http listen on %s: %v", cfg.Server.HTTPAddr, lnErr)
+		}
+		log.Printf("serving MCP over HTTP on %s (auth: %s)", ln.Addr(), cfg.Server.AuthMode)
+		err = runHTTP(ctx, s, ln, mw)
 	default:
 		err = s.Run(ctx, &mcp.StdioTransport{})
 	}
@@ -53,13 +59,40 @@ func main() {
 	}
 }
 
-// runHTTP serves the MCP server over streamable HTTP on ln until the context is
-// cancelled, then drains in-flight sessions (bounded) and stops. The same
-// *mcp.Server backs every session — the SDK creates a per-connection session, so
-// the shared server is just a factory over the one (concurrency-safe) ClickHouse
-// connection. Takes a listener so callers (and tests) own the bind.
-func runHTTP(ctx context.Context, s *mcp.Server, ln net.Listener) error {
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, nil)
+// authMiddleware builds the HTTP auth gate for the configured mode (nil = no
+// gate). The verifier is built here, at startup, so a discovery failure aborts
+// the process rather than surfacing per-request.
+func authMiddleware(ctx context.Context, cfg config.ServerConfig) (func(http.Handler) http.Handler, error) {
+	switch cfg.AuthMode {
+	case config.AuthOff:
+		return nil, nil
+	case config.AuthBearer:
+		v, err := auth.NewVerifier(ctx, cfg.OIDC)
+		if err != nil {
+			return nil, err
+		}
+		return mcpauth.RequireBearerToken(v.Verify, &mcpauth.RequireBearerTokenOptions{
+			ResourceMetadataURL: cfg.OIDC.ResourceURI,
+		}), nil
+	default:
+		// A mode config accepts but that isn't wired here (e.g. broker) must fail
+		// closed — never fall through to an unauthenticated server.
+		return nil, fmt.Errorf("auth mode %q has no HTTP gate wired", cfg.AuthMode)
+	}
+}
+
+// runHTTP serves over ln until ctx is cancelled, then drains in-flight sessions
+// (bounded) before stopping.
+//
+// One shared *mcp.Server backs every session — the SDK gives each connection its
+// own session, so the server is just a factory over the one (concurrency-safe)
+// ClickHouse connection. The listener is injected so callers (and tests) own the
+// bind; mw, when non-nil, wraps the handler (the auth gate).
+func runHTTP(ctx context.Context, s *mcp.Server, ln net.Listener, mw func(http.Handler) http.Handler) error {
+	var handler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, nil)
+	if mw != nil {
+		handler = mw(handler)
+	}
 	// ReadHeaderTimeout bounds slow-header (Slowloris) clients. Streamable HTTP
 	// keeps response bodies open for server-sent events, so no WriteTimeout.
 	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}

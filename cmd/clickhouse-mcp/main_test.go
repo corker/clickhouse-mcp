@@ -3,15 +3,19 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/corker/clickhouse-mcp/internal/config"
 )
 
 // testClient is a dedicated client so tests never share a connection pool with
@@ -45,7 +49,7 @@ func serveOnFreePort(t *testing.T, s *mcp.Server) (addr string, stop func(), don
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done = make(chan error, 1)
-	go func() { done <- runHTTP(ctx, s, ln) }()
+	go func() { done <- runHTTP(ctx, s, ln, nil) }()
 	return ln.Addr().String(), cancel, done
 }
 
@@ -153,7 +157,7 @@ func TestRunHTTP_PropagatesServeError(t *testing.T) {
 	}
 	s := mcp.NewServer(&mcp.Implementation{Name: "test"}, nil)
 	done := make(chan error, 1)
-	go func() { done <- runHTTP(context.Background(), s, ln) }() // ctx never cancels
+	go func() { done <- runHTTP(context.Background(), s, ln, nil) }() // ctx never cancels
 
 	// Closing the listener makes Serve return a real error regardless of whether
 	// it has reached Accept yet, so no synchronizing sleep is needed.
@@ -166,5 +170,64 @@ func TestRunHTTP_PropagatesServeError(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("runHTTP hung after listener closed")
+	}
+}
+
+func TestAuthMiddleware_OffIsNil(t *testing.T) {
+	mw, err := authMiddleware(context.Background(), config.ServerConfig{AuthMode: config.AuthOff})
+	if err != nil || mw != nil {
+		t.Errorf("auth off should yield no middleware: mw=%v err=%v", mw != nil, err)
+	}
+}
+
+// An auth mode config accepts but that isn't wired here must fail closed — never
+// return a nil (no-gate) middleware, which would serve unauthenticated. This
+// pins the security guarantee: a refactor turning the default arm into
+// `return nil, nil` would flip this test red.
+func TestAuthMiddleware_UnwiredModeFailsClosed(t *testing.T) {
+	mw, err := authMiddleware(context.Background(), config.ServerConfig{AuthMode: config.AuthBroker})
+	if err == nil || mw != nil {
+		t.Errorf("an unwired auth mode must fail closed (nil mw + error), got mw=%v err=%v", mw != nil, err)
+	}
+}
+
+func TestAuthMiddleware_BearerFailsOnBadIssuer(t *testing.T) {
+	// Discovery must fail fast at startup, not per-request. Bound the context so a
+	// dropped SYN fails the test rather than hanging the suite.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := authMiddleware(ctx, config.ServerConfig{
+		AuthMode: config.AuthBearer,
+		OIDC: config.OIDCConfig{
+			Issuer:      "http://127.0.0.1:1/nonexistent", // nothing listening
+			ResourceURI: "https://mcp.example",
+		},
+	})
+	if err == nil {
+		t.Error("bearer with an unreachable issuer should error at startup")
+	}
+}
+
+// A reachable issuer must yield a real (non-nil) middleware. Only the discovery
+// doc is needed — NewVerifier resolves endpoints at construction, without minting
+// a token.
+func TestAuthMiddleware_BearerReturnsGate(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"issuer":%q,"jwks_uri":%q,"authorization_endpoint":%q,"token_endpoint":%q}`,
+			srv.URL, srv.URL+"/jwks", srv.URL+"/authorize", srv.URL+"/token")
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	mw, err := authMiddleware(ctx, config.ServerConfig{
+		AuthMode: config.AuthBearer,
+		OIDC:     config.OIDCConfig{Issuer: srv.URL, ResourceURI: "https://mcp.example"},
+	})
+	if err != nil || mw == nil {
+		t.Errorf("bearer with a reachable issuer should yield a gate: mw=%v err=%v", mw != nil, err)
 	}
 }

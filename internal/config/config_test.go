@@ -58,10 +58,10 @@ func TestLoad_HTTPAddrDefault(t *testing.T) {
 	}
 }
 
-// Load must reject a bad or not-yet-supported server config rather than start
-// with it. bearer/broker parse as valid modes but aren't wired yet, so they must
-// fail loudly rather than silently serve unauthenticated. Per-row t.Run so each
-// row's t.Setenv is restored before the next.
+// Load must reject a bad or incomplete server config rather than start with it:
+// an unknown transport/mode, the not-yet-wired broker mode, or bearer without the
+// issuer/audience it needs to validate a token. Per-row t.Run so each row's
+// t.Setenv is restored before the next.
 func TestLoad_RejectsInvalidServerConfig(t *testing.T) {
 	cases := []struct {
 		name string
@@ -69,8 +69,11 @@ func TestLoad_RejectsInvalidServerConfig(t *testing.T) {
 	}{
 		{"unknown transport", map[string]string{"MCP_TRANSPORT": "grpc"}},
 		{"unknown auth mode", map[string]string{"MCP_AUTH_MODE": "magic"}},
-		{"bearer not implemented", map[string]string{"MCP_AUTH_MODE": "bearer"}},
 		{"broker not implemented", map[string]string{"MCP_AUTH_MODE": "broker"}},
+		{"bearer without issuer", map[string]string{"MCP_AUTH_MODE": "bearer", "MCP_RESOURCE_URI": "https://mcp.example"}},
+		{"bearer without resource uri", map[string]string{"MCP_AUTH_MODE": "bearer", "OIDC_ISSUER": "https://idp.example"}},
+		{"whitespace issuer is not set", map[string]string{"MCP_AUTH_MODE": "bearer", "OIDC_ISSUER": "  ", "MCP_RESOURCE_URI": "https://mcp.example"}},
+		{"required claim without value", map[string]string{"MCP_AUTH_MODE": "bearer", "OIDC_ISSUER": "https://idp.example", "MCP_RESOURCE_URI": "https://mcp.example", "OIDC_REQUIRED_CLAIM": "groups"}},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -79,5 +82,30 @@ func TestLoad_RejectsInvalidServerConfig(t *testing.T) {
 				t.Errorf("%s: Load should error", tt.name)
 			}
 		})
+	}
+}
+
+// bearer with issuer + resource URI loads, defaulting the identity claim and
+// leaving the access gate empty (authenticate-only) when unset.
+func TestLoad_BearerOIDC(t *testing.T) {
+	setEnv(t, map[string]string{
+		"MCP_AUTH_MODE":    "bearer",
+		"MCP_TRANSPORT":    "http",
+		"OIDC_ISSUER":      "https://idp.example",
+		"MCP_RESOURCE_URI": "https://mcp.example",
+	})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("bearer with issuer+resource should load: %v", err)
+	}
+	o := cfg.Server.OIDC
+	if o.Issuer != "https://idp.example" || o.ResourceURI != "https://mcp.example" {
+		t.Errorf("issuer/resource not carried: %+v", o)
+	}
+	if o.IdentityClaim != "email" {
+		t.Errorf("identity claim should default to email, got %q", o.IdentityClaim)
+	}
+	if o.RequiredClaim != "" {
+		t.Errorf("access gate should be empty when unset, got %q", o.RequiredClaim)
 	}
 }
