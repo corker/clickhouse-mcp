@@ -32,16 +32,20 @@ _Avoid_: limit, pagination (pagination is a separate `list_tables` concern)
 
 ### Auth (v0.2, HTTP transport)
 
-**OIDC broker**:
-The server's v0.2 role: it is the OAuth authorization server *to* the **consuming LLM** (runs auth-code + PKCE) and a client *to* one **upstream issuer**. It gates access to the server; it does not give each user a distinct ClickHouse identity.
-_Avoid_: OAuth proxy, IdP broker (we broker *one* upstream, not many)
+**Resource server**:
+The server's core v0.2 auth role: it validates the bearer token on every HTTP request — signature (upstream JWKS), issuer, expiry, and audience (the server's own canonical URI, RFC 8707) — and rejects otherwise with `401` + `WWW-Authenticate`. It authenticates the caller; it does not issue tokens. Every consumer (claude.ai, A2A, Cursor, …) reaches it this way (ADR-0007).
+_Avoid_: token issuer, authorization server (the server validates tokens, it does not mint them)
+
+**Broker layer**:
+An *optional* layer added on top of the **resource server** when interactive clients or a non-compliant IdP need it: it serves protected-resource + authorization-server metadata, Dynamic Client Registration, and a token-exchange proxy so auth-code + PKCE completes. Required for Entra (no DCR, non-standard metadata); unnecessary when the IdP is MCP-spec-compliant.
+_Avoid_: OAuth proxy; "the server's role" (it is a layer, not the whole model — ADR-0002's broker-as-primary was superseded by ADR-0007)
 
 **Upstream issuer**:
 The single external OIDC provider (Entra, Google, Keycloak, …) configured via `OIDC_ISSUER`. Its endpoints are resolved by OIDC Discovery, so a new provider is a config change, not code.
 _Avoid_: IdP (ambiguous — could mean the broker), tenant
 
 **Identity claim**:
-The ID-token claim the server reads to identify the user (`OIDC_IDENTITY_CLAIM`, default `email`). Config, not code — absorbs per-provider claim quirks.
+The validated-token claim the server reads to identify the user (`OIDC_IDENTITY_CLAIM`, default `email`). Config, not code — absorbs per-provider claim quirks.
 
 **Access claim**:
 The group/role claim the **upstream issuer** asserts, checked to allow or deny a user (`OIDC_REQUIRED_CLAIM` contains `OIDC_REQUIRED_VALUE`). The allow/deny decision lives in the IdP, never in our source.
