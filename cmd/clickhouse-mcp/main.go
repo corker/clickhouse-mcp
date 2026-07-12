@@ -83,11 +83,17 @@ func buildHTTPHandler(ctx context.Context, s *mcp.Server, cfg config.ServerConfi
 		if err != nil {
 			return nil, err
 		}
-		proxy, err := auth.NewProxy(
-			auth.BrokerConfig{PublicURL: cfg.Broker.PublicURL, ClientID: cfg.Broker.ClientID, Scopes: []string{"openid", "profile", "email"}},
-			cfg.Broker.PublicURL, cfg.Broker.ClientID, cfg.Broker.ClientSecret,
-			cfg.Broker.UpstreamAuthURL, cfg.Broker.UpstreamTokenURL, cfg.Broker.AllowedRedirectHosts,
-		)
+		proxy, err := auth.NewProxy(auth.ProxyConfig{
+			Broker: auth.BrokerConfig{
+				PublicURL: cfg.Broker.PublicURL,
+				ClientID:  cfg.Broker.ClientID,
+				Scopes:    cfg.Broker.Scopes,
+			},
+			ClientSecret:         cfg.Broker.ClientSecret,
+			UpstreamAuthURL:      cfg.Broker.UpstreamAuthURL,
+			UpstreamTokenURL:     cfg.Broker.UpstreamTokenURL,
+			AllowedRedirectHosts: cfg.Broker.AllowedRedirectHosts,
+		})
 		if err != nil {
 			return nil, err
 		}

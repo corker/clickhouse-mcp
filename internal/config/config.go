@@ -72,6 +72,8 @@ type BrokerConfig struct {
 	// AllowedRedirectHosts are non-loopback host suffixes a client redirect_uri may
 	// use. Loopback is always allowed; empty means loopback-only (the safe default).
 	AllowedRedirectHosts []string
+	// Scopes are advertised in metadata and requested upstream.
+	Scopes []string
 }
 
 // OIDCConfig holds bearer-token validation settings (ADR-0007/0003). Names match
@@ -230,6 +232,7 @@ func loadBroker() (BrokerConfig, error) {
 			hosts = append(hosts, h)
 		}
 	}
+	scopes := strings.Fields(envString("OIDC_SCOPES", "openid profile email"))
 	return BrokerConfig{
 		PublicURL:            strings.TrimRight(publicURL, "/"),
 		ClientID:             clientID,
@@ -237,6 +240,7 @@ func loadBroker() (BrokerConfig, error) {
 		UpstreamAuthURL:      authURL,
 		UpstreamTokenURL:     tokenURL,
 		AllowedRedirectHosts: hosts,
+		Scopes:               scopes,
 	}, nil
 }
 

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -75,7 +75,9 @@ func isLoopbackHost(host string) bool {
 }
 
 // signState packs the client's real redirect + original state into a tamper-proof
-// blob: an HMAC over the fields plus a nonce and timestamp for replay resistance.
+// blob: an HMAC binds all fields so the callback can trust the redirect it carries.
+// The nonce makes identical (redirect,state) pairs produce distinct blobs; it is
+// not a replay guard (the OAuth code it ultimately carries is single-use upstream).
 func (p ProxyConfig) signState(clientRedirect, clientState string) (string, error) {
 	nonce := make([]byte, 16)
 	if _, err := rand.Read(nonce); err != nil {
@@ -87,7 +89,11 @@ func (p ProxyConfig) signState(clientRedirect, clientState string) (string, erro
 		Nonce:     hex.EncodeToString(nonce),
 		Timestamp: time.Now().Unix(),
 	}
-	data.Sig = p.stateMAC(data)
+	mac, err := p.stateMAC(data)
+	if err != nil {
+		return "", err
+	}
+	data.Sig = mac
 	raw, err := json.Marshal(data)
 	if err != nil {
 		return "", err
@@ -96,7 +102,8 @@ func (p ProxyConfig) signState(clientRedirect, clientState string) (string, erro
 }
 
 // verifyState decodes and authenticates a state blob, rejecting a bad signature or
-// one older than maxStateAge (replay/stale defense). Returns the client's redirect
+// a timestamp outside the freshness window (too old, or in the future — a clock-
+// skew/compromise guard against a long-lived token). Returns the client's redirect
 // and original state.
 func (p ProxyConfig) verifyState(encoded string) (redirect, state string, err error) {
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
@@ -107,16 +114,24 @@ func (p ProxyConfig) verifyState(encoded string) (redirect, state string, err er
 	if err := json.Unmarshal(raw, &d); err != nil {
 		return "", "", fmt.Errorf("state not parseable")
 	}
-	if !hmac.Equal([]byte(d.Sig), []byte(p.stateMAC(d))) {
+	want, err := p.stateMAC(d)
+	if err != nil {
+		return "", "", fmt.Errorf("state not verifiable")
+	}
+	if !hmac.Equal([]byte(d.Sig), []byte(want)) {
 		return "", "", fmt.Errorf("state signature mismatch")
 	}
-	if time.Since(time.Unix(d.Timestamp, 0)) > maxStateAge {
+	age := time.Since(time.Unix(d.Timestamp, 0))
+	if age > maxStateAge || age < -clockSkew {
 		return "", "", fmt.Errorf("state expired")
 	}
 	return d.Redirect, d.State, nil
 }
 
-const maxStateAge = 10 * time.Minute
+const (
+	maxStateAge = 10 * time.Minute
+	clockSkew   = 1 * time.Minute
+)
 
 type stateData struct {
 	Redirect  string `json:"redirect"`
@@ -126,14 +141,18 @@ type stateData struct {
 	Sig       string `json:"sig,omitempty"`
 }
 
-// stateMAC computes the HMAC over the state fields (excluding the signature).
-func (p ProxyConfig) stateMAC(d stateData) string {
+// stateMAC computes the HMAC over the canonical JSON of the state with the
+// signature field cleared. Signing the marshaled bytes (rather than a hand-built
+// delimited string) removes any field-boundary ambiguity between fields.
+func (p ProxyConfig) stateMAC(d stateData) (string, error) {
+	d.Sig = ""
+	canonical, err := json.Marshal(d)
+	if err != nil {
+		return "", err
+	}
 	mac := hmac.New(sha256.New, p.stateKey)
-	// A fixed field order and separator so the signed bytes are unambiguous.
-	// hash.Hash.Write never returns an error.
-	_, _ = fmt.Fprintf(mac, "redirect=%s&state=%s&nonce=%s&timestamp=%s",
-		d.Redirect, d.State, d.Nonce, strconv.FormatInt(d.Timestamp, 10))
-	return hex.EncodeToString(mac.Sum(nil))
+	mac.Write(canonical)
+	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
 // HandleAuthorize starts the proxied auth-code+PKCE flow: validate the client's
@@ -247,8 +266,18 @@ func (p ProxyConfig) HandleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Only the grants we advertise (authorization_code, refresh_token) may borrow
+	// the broker's confidential client_secret. Refuse others before contacting the
+	// upstream, so a client cannot lend our credentials to client_credentials,
+	// password, or on-behalf-of grants it could never invoke on its own.
+	grant := r.PostForm.Get("grant_type")
+	if grant != "authorization_code" && grant != "refresh_token" {
+		http.Error(w, "unsupported grant_type", http.StatusBadRequest)
+		return
+	}
+
 	form := url.Values{}
-	form.Set("grant_type", r.PostForm.Get("grant_type"))
+	form.Set("grant_type", grant)
 	form.Set("code", r.PostForm.Get("code"))
 	form.Set("code_verifier", r.PostForm.Get("code_verifier"))
 	form.Set("redirect_uri", p.Broker.PublicURL+"/oauth/callback") // must match authorize
@@ -258,7 +287,11 @@ func (p ProxyConfig) HandleToken(w http.ResponseWriter, r *http.Request) {
 		form.Set("refresh_token", rt)
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.UpstreamTokenURL, strings.NewReader(form.Encode()))
+	// Bound the outbound call so a hung upstream can't tie up this (public,
+	// unauthenticated) endpoint indefinitely.
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.UpstreamTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

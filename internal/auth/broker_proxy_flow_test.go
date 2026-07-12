@@ -193,3 +193,23 @@ func TestProxyFlow_CallbackRejectsForgedState(t *testing.T) {
 		t.Errorf("forged state must be rejected, got %d (location=%q)", rec.Code, rec.Header().Get("Location"))
 	}
 }
+
+// The token endpoint must not lend the broker's client_secret to grants beyond
+// what it advertises — a confused-deputy defense.
+func TestProxyFlow_TokenRejectsUnsupportedGrant(t *testing.T) {
+	fu := newFakeUpstream(t)
+	p := proxyWithUpstream(fu)
+	for _, grant := range []string{"client_credentials", "password", "urn:ietf:params:oauth:grant-type:jwt-bearer", ""} {
+		form := url.Values{"grant_type": {grant}, "code": {"c"}}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		p.HandleToken(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("grant_type %q must be refused, got %d", grant, rec.Code)
+		}
+		if fu.gotTokenForm != nil {
+			t.Errorf("grant_type %q reached the upstream — secret must not be lent", grant)
+		}
+	}
+}

@@ -118,21 +118,17 @@ func (b BrokerConfig) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	writeJSONResponse(w, http.StatusCreated, b.dcrResponse(req))
 }
 
-// NewProxy builds a ProxyConfig from broker settings, generating the state
-// signing key. Fails if the key cannot be read from the system CSPRNG.
-func NewProxy(broker BrokerConfig, publicURL, clientID, clientSecret, upstreamAuthURL, upstreamTokenURL string, allowedHosts []string) (ProxyConfig, error) {
+// NewProxy finishes a ProxyConfig by generating its state signing key. The caller
+// fills the settings (named fields — no positional-arg transposition risk); the
+// key is owned here so a CSPRNG failure aborts startup. Fails if the key cannot
+// be read from the system CSPRNG.
+func NewProxy(cfg ProxyConfig) (ProxyConfig, error) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return ProxyConfig{}, err
 	}
-	return ProxyConfig{
-		Broker:               broker,
-		UpstreamAuthURL:      upstreamAuthURL,
-		UpstreamTokenURL:     upstreamTokenURL,
-		ClientSecret:         clientSecret,
-		AllowedRedirectHosts: allowedHosts,
-		stateKey:             key,
-	}, nil
+	cfg.stateKey = key
+	return cfg, nil
 }
 
 // RegisterRoutes mounts the broker's discovery + proxy endpoints on mux.

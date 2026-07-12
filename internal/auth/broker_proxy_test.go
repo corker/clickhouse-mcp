@@ -120,10 +120,28 @@ func TestVerifyState_RejectsExpired(t *testing.T) {
 		Nonce:     "abcd",
 		Timestamp: time.Now().Add(-2 * maxStateAge).Unix(),
 	}
-	d.Sig = p.stateMAC(d)
+	d.Sig, _ = p.stateMAC(d)
 	raw, _ := json.Marshal(d)
 	encoded := base64.RawURLEncoding.EncodeToString(raw)
 	if _, _, err := p.verifyState(encoded); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Errorf("expired state must be rejected as expired, got %v", err)
+	}
+}
+
+// A far-future timestamp (only reachable if the key leaked) must be rejected too,
+// so a compromised state cannot become a long-lived replay token.
+func TestVerifyState_RejectsFuture(t *testing.T) {
+	p := testProxy()
+	d := stateData{
+		Redirect:  "http://localhost/cb",
+		State:     "s",
+		Nonce:     "abcd",
+		Timestamp: time.Now().Add(1 * time.Hour).Unix(),
+	}
+	d.Sig, _ = p.stateMAC(d)
+	raw, _ := json.Marshal(d)
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	if _, _, err := p.verifyState(encoded); err == nil {
+		t.Error("a far-future timestamp must be rejected")
 	}
 }
