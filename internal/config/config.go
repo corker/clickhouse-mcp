@@ -8,15 +8,13 @@ import (
 	"strconv"
 )
 
-// Transport selects how the server talks to MCP clients.
 type Transport string
 
 const (
-	// TransportStdio serves one client over stdin/stdout (the v0.1 default). Auth
-	// does not apply — credentials come from the environment (MCP spec).
+	// Auth does not apply to stdio — credentials come from the environment (MCP
+	// spec); it serves a single client. HTTP serves many and auth applies.
 	TransportStdio Transport = "stdio"
-	// TransportHTTP serves many clients over streamable HTTP; auth applies.
-	TransportHTTP Transport = "http"
+	TransportHTTP  Transport = "http"
 )
 
 // AuthMode selects how HTTP requests are authenticated (ADR-0007). Only stdio
@@ -43,8 +41,8 @@ type Config struct {
 	Server ServerConfig
 }
 
-// ServerConfig is the MCP-facing transport and auth configuration, distinct from
-// the ClickHouse connection above.
+// ServerConfig is the MCP-facing config, kept distinct from the ClickHouse
+// connection fields above.
 type ServerConfig struct {
 	Transport Transport
 	// HTTPAddr is the listen address for TransportHTTP (host:port), e.g. ":8080".

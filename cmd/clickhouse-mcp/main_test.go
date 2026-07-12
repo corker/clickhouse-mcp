@@ -18,8 +18,8 @@ import (
 // each other (or with a prior test's now-dead :0 server) via http.DefaultClient.
 var testClient = &http.Client{}
 
-// postMCP sends one streamable-HTTP MCP message to the server at addr. sessionID
-// is optional (empty on the initialize call, then set from the response header).
+// postMCP sends one MCP message. sessionID is empty on the initialize call, then
+// taken from that response's header for subsequent calls.
 func postMCP(addr, body, sessionID string) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/", strings.NewReader(body))
 	if err != nil {
@@ -35,8 +35,8 @@ func postMCP(addr, body, sessionID string) (*http.Response, error) {
 
 const initBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
 
-// serveOnFreePort starts runHTTP on an OS-assigned port and returns its address,
-// a stop func, and the channel runHTTP's return lands on.
+// serveOnFreePort runs the server on an OS-assigned port (127.0.0.1:0) so
+// concurrent tests never collide on a fixed port.
 func serveOnFreePort(t *testing.T, s *mcp.Server) (addr string, stop func(), done chan error) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
