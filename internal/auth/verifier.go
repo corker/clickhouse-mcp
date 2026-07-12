@@ -16,7 +16,6 @@ import (
 	"github.com/corker/clickhouse-mcp/internal/config"
 )
 
-// Verifier validates access tokens against one OIDC issuer.
 type Verifier struct {
 	cfg      config.OIDCConfig
 	verifier *oidc.IDTokenVerifier
@@ -39,9 +38,7 @@ func NewVerifier(ctx context.Context, cfg config.OIDCConfig) (*Verifier, error) 
 	return &Verifier{cfg: cfg, verifier: v}, nil
 }
 
-// Verify implements the SDK's TokenVerifier signature. It verifies the token,
-// enforces the resource audience and the optional access-claim gate, and returns
-// the identity + scopes for the session.
+// Verify implements the SDK's TokenVerifier signature.
 func (v *Verifier) Verify(ctx context.Context, token string, _ *http.Request) (*mcpauth.TokenInfo, error) {
 	idToken, err := v.verifier.Verify(ctx, token)
 	if err != nil {

@@ -42,8 +42,8 @@ type Config struct {
 	Server ServerConfig
 }
 
-// ServerConfig is the MCP-facing config, kept distinct from the ClickHouse
-// connection fields above.
+// ServerConfig is the MCP transport/auth config (the ClickHouse connection is
+// the top-level Config fields).
 type ServerConfig struct {
 	Transport Transport
 	// HTTPAddr is the listen address for TransportHTTP (host:port), e.g. ":8080".
