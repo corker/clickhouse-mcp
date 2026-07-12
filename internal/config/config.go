@@ -136,18 +136,30 @@ func loadServer() (ServerConfig, error) {
 		return ServerConfig{}, fmt.Errorf("MCP_AUTH_MODE: unknown mode %q (want off, bearer, or broker)", authMode)
 	}
 
+	// A named provider (entra) derives the Entra-specific issuer/endpoints/audience
+	// from a tenant id so the operator does not hand-wire them. Only broker mode
+	// reads it; bearer mode always uses the explicit generic OIDC vars.
+	var derived *entraDerived
+	if authMode == AuthBroker {
+		d, err := deriveProvider()
+		if err != nil {
+			return ServerConfig{}, err
+		}
+		derived = d
+	}
+
 	// Both bearer and broker validate the resulting token, so both load OIDC.
 	var oidc OIDCConfig
 	var broker BrokerConfig
 	if authMode == AuthBearer || authMode == AuthBroker {
-		o, err := loadOIDC()
+		o, err := loadOIDC(derived)
 		if err != nil {
 			return ServerConfig{}, err
 		}
 		oidc = o
 	}
 	if authMode == AuthBroker {
-		b, err := loadBroker()
+		b, err := loadBroker(derived)
 		if err != nil {
 			return ServerConfig{}, err
 		}
@@ -163,16 +175,63 @@ func loadServer() (ServerConfig, error) {
 	}, nil
 }
 
+// entraDerived holds the values a named provider computes so the operator need not
+// supply them. nil means the generic provider (all endpoints explicit).
+type entraDerived struct {
+	Issuer       string
+	ResourceURI  string
+	AuthorizeURL string
+	TokenURL     string
+	ClientID     string
+	ClientSecret string
+}
+
+// deriveProvider reads MCP_BROKER_PROVIDER and, for entra, derives the issuer,
+// authorize/token endpoints, and audience (defaulting to the client id — an Entra
+// v2.0 access token's aud is the app id, not the server URL) from AZURE_TENANT_ID.
+// Returns nil for the generic provider, leaving every endpoint explicit.
+func deriveProvider() (*entraDerived, error) {
+	provider := strings.TrimSpace(envString("MCP_BROKER_PROVIDER", "generic"))
+	switch provider {
+	case "generic":
+		return nil, nil
+	case "entra":
+		tenant := strings.TrimSpace(envString("AZURE_TENANT_ID", ""))
+		clientID := strings.TrimSpace(envString("AZURE_CLIENT_ID", ""))
+		clientSecret := strings.TrimSpace(envString("AZURE_CLIENT_SECRET", ""))
+		for k, v := range map[string]string{"AZURE_TENANT_ID": tenant, "AZURE_CLIENT_ID": clientID, "AZURE_CLIENT_SECRET": clientSecret} {
+			if v == "" {
+				return nil, fmt.Errorf("%s is required when MCP_BROKER_PROVIDER=entra", k)
+			}
+		}
+		base := "https://login.microsoftonline.com/" + tenant
+		return &entraDerived{
+			Issuer:       base + "/v2.0",
+			ResourceURI:  strings.TrimSpace(envString("MCP_RESOURCE_URI", clientID)),
+			AuthorizeURL: base + "/oauth2/v2.0/authorize",
+			TokenURL:     base + "/oauth2/v2.0/token",
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+		}, nil
+	default:
+		return nil, fmt.Errorf("MCP_BROKER_PROVIDER: unknown provider %q (want entra or generic)", provider)
+	}
+}
+
 // loadOIDC reads the bearer-token settings. Issuer and resource URI are required
 // (no safe default — an empty audience would validate any token); the identity
 // claim defaults to email and the access gate is optional. Values are trimmed so
 // a whitespace-only env var is treated as unset rather than a bad URL.
-func loadOIDC() (OIDCConfig, error) {
+func loadOIDC(derived *entraDerived) (OIDCConfig, error) {
 	issuer := strings.TrimSpace(envString("OIDC_ISSUER", ""))
+	resourceURI := strings.TrimSpace(envString("MCP_RESOURCE_URI", ""))
+	if derived != nil {
+		issuer = derived.Issuer
+		resourceURI = derived.ResourceURI
+	}
 	if issuer == "" {
 		return OIDCConfig{}, fmt.Errorf("OIDC_ISSUER is required when MCP_AUTH_MODE=bearer")
 	}
-	resourceURI := strings.TrimSpace(envString("MCP_RESOURCE_URI", ""))
 	if resourceURI == "" {
 		return OIDCConfig{}, fmt.Errorf("MCP_RESOURCE_URI is required when MCP_AUTH_MODE=bearer (the audience a token must carry)")
 	}
@@ -196,7 +255,7 @@ func loadOIDC() (OIDCConfig, error) {
 // endpoints, and pre-registered client id/secret are all required — the broker
 // cannot function without any of them, so fail loudly rather than serve a broken
 // login flow.
-func loadBroker() (BrokerConfig, error) {
+func loadBroker(derived *entraDerived) (BrokerConfig, error) {
 	required := func(key string) (string, error) {
 		v := strings.TrimSpace(envString(key, ""))
 		if v == "" {
@@ -208,21 +267,27 @@ func loadBroker() (BrokerConfig, error) {
 	if err != nil {
 		return BrokerConfig{}, err
 	}
-	clientID, err := required("OIDC_CLIENT_ID")
-	if err != nil {
-		return BrokerConfig{}, err
-	}
-	clientSecret, err := required("OIDC_CLIENT_SECRET")
-	if err != nil {
-		return BrokerConfig{}, err
-	}
-	authURL, err := required("OIDC_AUTHORIZE_URL")
-	if err != nil {
-		return BrokerConfig{}, err
-	}
-	tokenURL, err := required("OIDC_TOKEN_URL")
-	if err != nil {
-		return BrokerConfig{}, err
+
+	// The entra provider supplies the client credentials and endpoints; the generic
+	// provider requires them explicitly.
+	clientID, clientSecret, authURL, tokenURL := "", "", "", ""
+	if derived != nil {
+		clientID, clientSecret = derived.ClientID, derived.ClientSecret
+		authURL, tokenURL = derived.AuthorizeURL, derived.TokenURL
+	} else {
+		for _, f := range []struct {
+			key string
+			dst *string
+		}{
+			{"OIDC_CLIENT_ID", &clientID},
+			{"OIDC_CLIENT_SECRET", &clientSecret},
+			{"OIDC_AUTHORIZE_URL", &authURL},
+			{"OIDC_TOKEN_URL", &tokenURL},
+		} {
+			if *f.dst, err = required(f.key); err != nil {
+				return BrokerConfig{}, err
+			}
+		}
 	}
 
 	var hosts []string

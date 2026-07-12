@@ -71,9 +71,27 @@ rediscover it:
 ## Operator experience (the requirement)
 
 Smooth Entra = register **one** app in Entra by hand (unavoidable — Entra has no DCR; this is
-Microsoft's own pre-authorized-client model), then set env vars and flip the mode:
-`MCP_AUTH_MODE=broker`, `OIDC_ISSUER` (the Entra tenant), the Entra `client_id`/`client_secret`, this
-server's public URL, and the allowed client-redirect domain suffix(es). No second component.
+Microsoft's own pre-authorized-client model), then set env vars and flip the mode. Because the
+broker exists *for* Entra, Entra is a **named provider** (`MCP_BROKER_PROVIDER=entra`), not something
+the operator hand-wires as a generic OAuth passthrough:
+
+| Provider | Operator sets | Broker derives |
+| --- | --- | --- |
+| `entra` | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `MCP_PUBLIC_URL`, allowed redirect hosts | issuer `…/{tenant}/v2.0`; authorize `…/{tenant}/oauth2/v2.0/authorize`; token `…/{tenant}/oauth2/v2.0/token`; **audience defaults to `AZURE_CLIENT_ID`** |
+| `generic` (default) | `OIDC_ISSUER`, `OIDC_AUTHORIZE_URL`, `OIDC_TOKEN_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `MCP_RESOURCE_URI`, `MCP_PUBLIC_URL` | nothing — every endpoint is explicit (for Keycloak/Okta/Auth0 fronted through the broker) |
+
+**Why the audience default matters (a real trap the generic path hides).** A Microsoft Entra **v2.0
+access token stamps `aud` = the application (client) ID** (a GUID), not the server's URL, unless the
+operator explicitly exposes a custom `api://…` scope. Our layer-2 verifier requires `aud ==` the
+configured resource URI. In the generic path an operator naturally sets `MCP_RESOURCE_URI` to the
+server URL — and then **every real Entra token is rejected**, because its `aud` is a client-ID GUID.
+The `entra` provider removes the trap: it defaults the expected audience to `AZURE_CLIENT_ID`
+(overridable to `api://…` only if the operator exposed an API). Verified against Microsoft's
+access-token docs and the deployed mcp-trino/mcp-tesseract Pulumi config (`SignInAudience =
+AzureADMyOrg`, single redirect = `{publicUrl}/oauth/callback`, `aud` = app id).
+
+The generic path is retained unchanged, so a DCR-lacking but otherwise standard IdP can still be
+fronted by hand-wiring the URLs. No second component either way.
 
 ## Considered options
 

@@ -160,3 +160,102 @@ func TestLoad_BrokerConfig(t *testing.T) {
 		t.Errorf("broker should also load OIDC, got %+v", cfg.Server.OIDC)
 	}
 }
+
+// The entra provider derives the issuer, authorize/token endpoints, and — the
+// point of the special case — the audience from the tenant + client id, so the
+// operator never hand-wires them. A real Entra v2.0 token's aud is the app id, so
+// the audience must default to AZURE_CLIENT_ID, not the server URL.
+func TestLoad_BrokerEntraProvider(t *testing.T) {
+	setEnv(t, map[string]string{
+		"MCP_AUTH_MODE":       "broker",
+		"MCP_TRANSPORT":       "http",
+		"MCP_BROKER_PROVIDER": "entra",
+		"AZURE_TENANT_ID":     "tenant-abc",
+		"AZURE_CLIENT_ID":     "client-xyz",
+		"AZURE_CLIENT_SECRET": "shh",
+		"MCP_PUBLIC_URL":      "https://mcp.example",
+	})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("entra provider should load with tenant+client only: %v", err)
+	}
+	o, b := cfg.Server.OIDC, cfg.Server.Broker
+	if o.Issuer != "https://login.microsoftonline.com/tenant-abc/v2.0" {
+		t.Errorf("issuer not derived from tenant: %q", o.Issuer)
+	}
+	if o.ResourceURI != "client-xyz" {
+		t.Errorf("audience must default to the client id (Entra stamps aud=app id), got %q", o.ResourceURI)
+	}
+	if b.UpstreamAuthURL != "https://login.microsoftonline.com/tenant-abc/oauth2/v2.0/authorize" {
+		t.Errorf("authorize URL not derived: %q", b.UpstreamAuthURL)
+	}
+	if b.UpstreamTokenURL != "https://login.microsoftonline.com/tenant-abc/oauth2/v2.0/token" {
+		t.Errorf("token URL not derived: %q", b.UpstreamTokenURL)
+	}
+	if b.ClientID != "client-xyz" || b.ClientSecret != "shh" {
+		t.Errorf("client creds not carried from AZURE_* vars: %+v", b)
+	}
+}
+
+// An operator who exposed a custom api:// scope in Entra can override the derived
+// client-id audience via MCP_RESOURCE_URI.
+func TestLoad_BrokerEntraAudienceOverride(t *testing.T) {
+	setEnv(t, map[string]string{
+		"MCP_AUTH_MODE":       "broker",
+		"MCP_TRANSPORT":       "http",
+		"MCP_BROKER_PROVIDER": "entra",
+		"AZURE_TENANT_ID":     "tenant-abc",
+		"AZURE_CLIENT_ID":     "client-xyz",
+		"AZURE_CLIENT_SECRET": "shh",
+		"MCP_PUBLIC_URL":      "https://mcp.example",
+		"MCP_RESOURCE_URI":    "api://mcp-clickhouse",
+	})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("entra provider with audience override should load: %v", err)
+	}
+	if cfg.Server.OIDC.ResourceURI != "api://mcp-clickhouse" {
+		t.Errorf("explicit MCP_RESOURCE_URI should override the client-id default, got %q", cfg.Server.OIDC.ResourceURI)
+	}
+}
+
+// The entra provider fails loudly when a required AZURE_* var is missing, and an
+// unknown provider name is rejected rather than silently treated as generic.
+func TestLoad_BrokerProviderErrors(t *testing.T) {
+	base := map[string]string{
+		"MCP_AUTH_MODE": "broker", "MCP_TRANSPORT": "http", "MCP_PUBLIC_URL": "https://mcp.example",
+	}
+	entra := func(extra map[string]string) map[string]string {
+		m := map[string]string{"MCP_BROKER_PROVIDER": "entra"}
+		for k, v := range base {
+			m[k] = v
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"entra without tenant", entra(map[string]string{"AZURE_CLIENT_ID": "c", "AZURE_CLIENT_SECRET": "s"})},
+		{"entra without client id", entra(map[string]string{"AZURE_TENANT_ID": "t", "AZURE_CLIENT_SECRET": "s"})},
+		{"entra without secret", entra(map[string]string{"AZURE_TENANT_ID": "t", "AZURE_CLIENT_ID": "c"})},
+		{"unknown provider", func() map[string]string {
+			m := map[string]string{"MCP_BROKER_PROVIDER": "okta-magic"}
+			for k, v := range base {
+				m[k] = v
+			}
+			return m
+		}()},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			setEnv(t, tt.env)
+			if _, err := Load(); err == nil {
+				t.Errorf("%s: Load should error", tt.name)
+			}
+		})
+	}
+}
