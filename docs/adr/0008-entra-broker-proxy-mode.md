@@ -113,19 +113,20 @@ fronted by hand-wiring the URLs. No second component either way.
   callback registered in Entra and multi-URI Entra config; less smooth and larger open-redirect
   surface than fixed-redirect + signed state.
 - **Platform-fronted auth (Azure Container Apps / App Service EasyAuth) as a distinct auth mode** —
-  *considered and deferred.* In this topology the platform's auth sidecar terminates OAuth before the
+  *considered and rejected.* In this topology the platform's auth sidecar terminates OAuth before the
   request reaches the server, injecting the identity in an `X-MS-CLIENT-PRINCIPAL` header (base64 JSON
   claims; the platform strips any client-supplied copy, so its presence is the trust boundary). The
-  server would trust that principal and apply the access gate — no broker, no token validation. This
-  is a real pattern in the surrounding estate (the `clickhouse-proxy` service uses it), and a working
-  gate was prototyped. **Deferred because the battle-tested MCP servers (mcp-trino, mcp-tesseract) do
-  *not* use it** — they run the bare-Entra broker this ADR describes — and no deployment of this
-  server needs platform-fronted auth today. Building it now would be speculative infrastructure. Notes
-  for if it is revived: EasyAuth's default claims mapping emits email under the WS-Federation URI
-  `…/ws/2005/05/identity/claims/emailaddress` (not `email`), so identity resolution must alias the
-  mapped URIs; it requires the container app set to *Require authentication* (so only authenticated
-  requests arrive); and it cannot populate the SDK's session `UserID` (unexported), so session-hijack
-  binding relies on the sidecar re-authenticating every request instead.
+  server would trust that principal and apply the access gate — no broker, no token validation. It is a
+  real pattern elsewhere in the estate (the `clickhouse-proxy` service uses it), and a working gate was
+  prototyped, but the battle-tested MCP servers (mcp-trino, mcp-tesseract) run the bare-Entra broker
+  this ADR describes rather than EasyAuth, and no deployment of this server needs platform-fronted auth.
+  Building it would be speculative infrastructure, so it is dropped, not deferred. If a future
+  deployment ever forces a revisit, the prototype surfaced three sharp edges worth recording: EasyAuth's
+  default claims mapping emits email under the WS-Federation URI
+  `…/ws/2005/05/identity/claims/emailaddress` (not `email`), so identity resolution would have to alias
+  the mapped URIs; it requires the container app set to *Require authentication* so only authenticated
+  requests arrive; and it cannot populate the SDK's session `UserID` (unexported), so session-hijack
+  binding would rely on the sidecar re-authenticating every request instead.
 
 ## Consequences
 
