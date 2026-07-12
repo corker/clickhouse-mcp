@@ -296,6 +296,27 @@ func TestLoad_BrokerGoogleProvider(t *testing.T) {
 	}
 }
 
+// The provider endpoint bases are package-level vars (not operator config) so a
+// validation harness can point a named provider at a mock IdP. Overriding the entra
+// base must repoint issuer + authorize + token together; the default is restored.
+func TestDeriveEntra_HonorsAuthorityBaseSeam(t *testing.T) {
+	orig := entraAuthorityBase
+	t.Cleanup(func() { entraAuthorityBase = orig })
+	entraAuthorityBase = "http://127.0.0.1:19000"
+
+	setEnv(t, map[string]string{
+		"AZURE_TENANT_ID": "t1", "AZURE_CLIENT_ID": "c1", "AZURE_CLIENT_SECRET": "s1",
+	})
+	d, err := deriveEntra()
+	if err != nil {
+		t.Fatalf("deriveEntra: %v", err)
+	}
+	want := "http://127.0.0.1:19000/t1"
+	if d.Issuer != want+"/v2.0" || d.AuthorizeURL != want+"/oauth2/v2.0/authorize" || d.TokenURL != want+"/oauth2/v2.0/token" {
+		t.Errorf("authority base not applied to all three endpoints: %+v", d)
+	}
+}
+
 // google, like entra, lets an operator override the client-id audience default via
 // MCP_RESOURCE_URI (for a custom API audience).
 func TestLoad_BrokerGoogleAudienceOverride(t *testing.T) {

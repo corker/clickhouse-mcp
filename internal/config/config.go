@@ -230,13 +230,24 @@ func requireEnv(provider string, keys ...string) (map[string]string, error) {
 // deriveEntra derives the Entra endpoints from the tenant id. An Entra v2.0 access
 // token's aud is the app (client) id, not the server URL, so the audience defaults
 // to the client id (overridable via MCP_RESOURCE_URI for a custom api:// scope).
+// Provider endpoint bases. Package-level (not env-configurable) so an operator
+// cannot repoint the "trusted Entra/Google" flow at a rogue endpoint — the whole
+// point of a named provider is that its endpoints are fixed. They are variables
+// rather than constants solely so an in-package validation harness can point them
+// at a mock IdP; production always uses the real hosts.
+var (
+	entraAuthorityBase = "https://login.microsoftonline.com"
+	googleAccountsBase = "https://accounts.google.com"
+	googleTokenBase    = "https://oauth2.googleapis.com" //nolint:gosec // G101 false positive: public Google token endpoint host, not a credential
+)
+
 func deriveEntra() (*derivedProvider, error) {
 	env, err := requireEnv("entra", "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
 	if err != nil {
 		return nil, err
 	}
 	clientID := env["AZURE_CLIENT_ID"]
-	base := "https://login.microsoftonline.com/" + env["AZURE_TENANT_ID"]
+	base := entraAuthorityBase + "/" + env["AZURE_TENANT_ID"]
 	return &derivedProvider{
 		Issuer:       base + "/v2.0",
 		ResourceURI:  strings.TrimSpace(envString("MCP_RESOURCE_URI", clientID)),
@@ -256,11 +267,11 @@ func deriveGoogle() (*derivedProvider, error) {
 		return nil, err
 	}
 	clientID := env["GOOGLE_CLIENT_ID"]
-	return &derivedProvider{ //nolint:gosec // G101 false positive: these are public Google OAuth endpoint URLs, not credentials
-		Issuer:       "https://accounts.google.com",
+	return &derivedProvider{
+		Issuer:       googleAccountsBase,
 		ResourceURI:  strings.TrimSpace(envString("MCP_RESOURCE_URI", clientID)),
-		AuthorizeURL: "https://accounts.google.com/o/oauth2/v2/auth",
-		TokenURL:     "https://oauth2.googleapis.com/token",
+		AuthorizeURL: googleAccountsBase + "/o/oauth2/v2/auth",
+		TokenURL:     googleTokenBase + "/token",
 		ClientID:     clientID,
 		ClientSecret: env["GOOGLE_CLIENT_SECRET"],
 	}, nil
