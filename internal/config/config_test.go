@@ -335,8 +335,12 @@ func TestLoad_BrokerRejectsEmptyDerivedAudience(t *testing.T) {
 				env["GOOGLE_CLIENT_ID"], env["GOOGLE_CLIENT_SECRET"] = "c", "s"
 			}
 			setEnv(t, env)
-			if _, err := Load(); err == nil {
-				t.Errorf("%s: a whitespace MCP_RESOURCE_URI must be rejected, not accepted as an empty audience", provider)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("%s: a whitespace MCP_RESOURCE_URI must be rejected, not accepted as an empty audience", provider)
+			}
+			if !strings.Contains(err.Error(), "MCP_RESOURCE_URI") {
+				t.Errorf("%s: rejection should name the empty audience, got %v", provider, err)
 			}
 		})
 	}
