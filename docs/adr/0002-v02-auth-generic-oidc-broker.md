@@ -1,6 +1,13 @@
 # v0.2 auth: generic OIDC broker via discovery, not per-IdP code
 
-**Status:** accepted
+**Status:** superseded by [ADR-0007](0007-auth-layered-resource-server-plus-optional-broker.md) (2026-07-12)
+
+> **Superseded.** Mapping the full consumer matrix (claude.ai interactive + fixed-header, Cursor/VS
+> Code with strict DCR, A2A M2M, Azure/Entra, local dev) and verifying the MCP 2025-06-18 auth spec
+> showed the primary model is a bearer-token **resource server**, with the broker demoted to an
+> *optional* compatibility layer for interactive clients and non-compliant IdPs (Entra). The
+> discovery-generalizes rationale and the "extend by writing more code for non-OIDC" scope boundary
+> below still hold for that optional layer. See ADR-0007.
 
 For v0.2 (HTTP transport), the server is an **OAuth 2.1 broker**: it presents itself as the
 authorization server to the MCP client (runs the auth-code + PKCE/S256 flow, issues its own
