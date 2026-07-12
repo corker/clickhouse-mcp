@@ -59,10 +59,9 @@ func main() {
 	}
 }
 
-// authMiddleware builds the HTTP auth gate for the configured mode. off → nil (no
-// gate). bearer → the SDK's RequireBearerToken backed by our OIDC verifier; the
-// verifier is built here so a discovery failure aborts startup rather than
-// surfacing per-request.
+// authMiddleware builds the HTTP auth gate for the configured mode (nil = no
+// gate). The verifier is built here, at startup, so a discovery failure aborts
+// the process rather than surfacing per-request.
 func authMiddleware(ctx context.Context, cfg config.ServerConfig) (func(http.Handler) http.Handler, error) {
 	switch cfg.AuthMode {
 	case config.AuthOff:
@@ -82,12 +81,13 @@ func authMiddleware(ctx context.Context, cfg config.ServerConfig) (func(http.Han
 	}
 }
 
-// runHTTP serves the MCP server over streamable HTTP on ln until the context is
-// cancelled, then drains in-flight sessions (bounded) and stops. The same
-// *mcp.Server backs every session — the SDK creates a per-connection session, so
-// the shared server is just a factory over the one (concurrency-safe) ClickHouse
-// connection. Takes a listener so callers (and tests) own the bind, and an
-// optional middleware (the auth gate) that wraps the handler when non-nil.
+// runHTTP serves over ln until ctx is cancelled, then drains in-flight sessions
+// (bounded) before stopping.
+//
+// One shared *mcp.Server backs every session — the SDK gives each connection its
+// own session, so the server is just a factory over the one (concurrency-safe)
+// ClickHouse connection. The listener is injected so callers (and tests) own the
+// bind; mw, when non-nil, wraps the handler (the auth gate).
 func runHTTP(ctx context.Context, s *mcp.Server, ln net.Listener, mw func(http.Handler) http.Handler) error {
 	var handler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, nil)
 	if mw != nil {
