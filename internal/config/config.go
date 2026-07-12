@@ -18,8 +18,8 @@ const (
 	TransportHTTP  Transport = "http"
 )
 
-// AuthMode selects how HTTP requests are authenticated (ADR-0007). Only stdio
-// and AuthOff are functional today; bearer/broker land in later v0.2 layers.
+// AuthMode selects how HTTP requests are authenticated (ADR-0007). off and bearer
+// are wired; broker (the interactive metadata/DCR layer) is not yet.
 type AuthMode string
 
 const (
