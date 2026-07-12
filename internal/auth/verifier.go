@@ -61,7 +61,7 @@ func (v *Verifier) Verify(ctx context.Context, token string, _ *http.Request) (*
 	// UserID binds the session to a principal (the SDK uses it to prevent session
 	// hijacking). An empty id would collapse distinct no-identity principals into
 	// one, so fail closed rather than issue a session with no identity.
-	userID := identity(v.cfg.AccessPolicy, claims)
+	userID := identity(v.cfg.IdentityClaim, claims)
 	if userID == "" {
 		return nil, fmt.Errorf("%w: token carries no usable identity claim", mcpauth.ErrInvalidToken)
 	}
@@ -78,8 +78,8 @@ func (v *Verifier) Verify(ctx context.Context, token string, _ *http.Request) (*
 // a stable user id. sub is last: it is always present in a spec-compliant token but
 // is opaque, so a human-readable claim wins when available. Whitespace-only values
 // are treated as absent so they cannot become a collapsing "   " identity.
-func identity(policy config.AccessPolicy, claims map[string]any) string {
-	for _, key := range []string{policy.IdentityClaim, "preferred_username", "email", "sub"} {
+func identity(identityClaim string, claims map[string]any) string {
+	for _, key := range []string{identityClaim, "preferred_username", "email", "sub"} {
 		if s, ok := claims[key].(string); ok {
 			if trimmed := strings.TrimSpace(s); trimmed != "" {
 				return trimmed
