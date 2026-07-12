@@ -1,10 +1,35 @@
-// Package config loads ClickHouse connection settings from CLICKHOUSE_* env vars.
+// Package config loads server and ClickHouse settings from CLICKHOUSE_* and MCP_*
+// env vars.
 package config
 
 import (
 	"fmt"
 	"os"
 	"strconv"
+)
+
+// Transport selects how the server talks to MCP clients.
+type Transport string
+
+const (
+	// TransportStdio serves one client over stdin/stdout (the v0.1 default). Auth
+	// does not apply — credentials come from the environment (MCP spec).
+	TransportStdio Transport = "stdio"
+	// TransportHTTP serves many clients over streamable HTTP; auth applies.
+	TransportHTTP Transport = "http"
+)
+
+// AuthMode selects how HTTP requests are authenticated (ADR-0007). Only stdio
+// and AuthOff are functional today; bearer/broker land in later v0.2 layers.
+type AuthMode string
+
+const (
+	// AuthOff serves without authentication — local dev / MCP Inspector.
+	AuthOff AuthMode = "off"
+	// AuthBearer validates a bearer token on every request (resource-server core).
+	AuthBearer AuthMode = "bearer"
+	// AuthBroker is bearer plus the interactive metadata/DCR/proxy layer (Entra).
+	AuthBroker AuthMode = "broker"
 )
 
 type Config struct {
@@ -14,6 +39,17 @@ type Config struct {
 	Password string
 	Database string
 	Secure   bool
+
+	Server ServerConfig
+}
+
+// ServerConfig is the MCP-facing transport and auth configuration, distinct from
+// the ClickHouse connection above.
+type ServerConfig struct {
+	Transport Transport
+	// HTTPAddr is the listen address for TransportHTTP (host:port), e.g. ":8080".
+	HTTPAddr string
+	AuthMode AuthMode
 }
 
 func Load() (*Config, error) {
@@ -28,6 +64,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	srv, err := loadServer()
+	if err != nil {
+		return nil, err
+	}
 	return &Config{
 		Host:     envString("CLICKHOUSE_HOST", "localhost"),
 		Port:     port,
@@ -35,6 +75,35 @@ func Load() (*Config, error) {
 		Password: envString("CLICKHOUSE_PASSWORD", ""),
 		Database: envString("CLICKHOUSE_DATABASE", "default"),
 		Secure:   secure,
+		Server:   srv,
+	}, nil
+}
+
+func loadServer() (ServerConfig, error) {
+	transport := Transport(envString("MCP_TRANSPORT", string(TransportStdio)))
+	switch transport {
+	case TransportStdio, TransportHTTP:
+	default:
+		return ServerConfig{}, fmt.Errorf("MCP_TRANSPORT: unknown transport %q (want stdio or http)", transport)
+	}
+
+	authMode := AuthMode(envString("MCP_AUTH_MODE", string(AuthOff)))
+	switch authMode {
+	case AuthOff, AuthBearer, AuthBroker:
+	default:
+		return ServerConfig{}, fmt.Errorf("MCP_AUTH_MODE: unknown mode %q (want off, bearer, or broker)", authMode)
+	}
+
+	// bearer/broker are not implemented yet; fail loudly rather than serve
+	// unauthenticated while the operator believes auth is on.
+	if authMode != AuthOff {
+		return ServerConfig{}, fmt.Errorf("MCP_AUTH_MODE=%s is not implemented yet; only off is available in this build", authMode)
+	}
+
+	return ServerConfig{
+		Transport: transport,
+		HTTPAddr:  envString("MCP_HTTP_ADDR", ":8080"),
+		AuthMode:  authMode,
 	}, nil
 }
 
