@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 )
@@ -115,4 +116,30 @@ func (b BrokerConfig) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONResponse(w, http.StatusCreated, b.dcrResponse(req))
+}
+
+// NewProxy builds a ProxyConfig from broker settings, generating the state
+// signing key. Fails if the key cannot be read from the system CSPRNG.
+func NewProxy(broker BrokerConfig, publicURL, clientID, clientSecret, upstreamAuthURL, upstreamTokenURL string, allowedHosts []string) (ProxyConfig, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return ProxyConfig{}, err
+	}
+	return ProxyConfig{
+		Broker:               broker,
+		UpstreamAuthURL:      upstreamAuthURL,
+		UpstreamTokenURL:     upstreamTokenURL,
+		ClientSecret:         clientSecret,
+		AllowedRedirectHosts: allowedHosts,
+		stateKey:             key,
+	}, nil
+}
+
+// RegisterRoutes mounts the broker's discovery + proxy endpoints on mux.
+func (p ProxyConfig) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/.well-known/oauth-authorization-server", p.Broker.HandleAuthServerMetadata)
+	mux.HandleFunc("/oauth/register", p.Broker.HandleRegister)
+	mux.HandleFunc("/oauth/authorize", p.HandleAuthorize)
+	mux.HandleFunc("/oauth/callback", p.HandleCallback)
+	mux.HandleFunc("/oauth/token", p.HandleToken)
 }

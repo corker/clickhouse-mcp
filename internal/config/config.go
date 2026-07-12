@@ -52,6 +52,26 @@ type ServerConfig struct {
 	AuthMode AuthMode
 	// OIDC is populated (and required) only when AuthMode is bearer or broker.
 	OIDC OIDCConfig
+	// Broker is populated only when AuthMode is broker (the interactive shim).
+	Broker BrokerConfig
+}
+
+// BrokerConfig holds the interactive-broker settings (ADR-0008), required only for
+// MCP_AUTH_MODE=broker. It fronts an upstream IdP (e.g. Entra) that MCP clients
+// cannot use directly.
+type BrokerConfig struct {
+	// PublicURL is this server's externally reachable base URL (no trailing slash);
+	// the broker advertises its own OAuth endpoints under it.
+	PublicURL string
+	// ClientID/ClientSecret are the app pre-registered once with the upstream IdP.
+	ClientID     string
+	ClientSecret string
+	// UpstreamAuthURL/UpstreamTokenURL are the IdP's real authorize/token endpoints.
+	UpstreamAuthURL  string
+	UpstreamTokenURL string
+	// AllowedRedirectHosts are non-loopback host suffixes a client redirect_uri may
+	// use. Loopback is always allowed; empty means loopback-only (the safe default).
+	AllowedRedirectHosts []string
 }
 
 // OIDCConfig holds bearer-token validation settings (ADR-0007/0003). Names match
@@ -115,19 +135,22 @@ func loadServer() (ServerConfig, error) {
 		return ServerConfig{}, fmt.Errorf("MCP_AUTH_MODE: unknown mode %q (want off, bearer, or broker)", authMode)
 	}
 
-	// broker is a valid mode but its interactive layer is not wired yet; fail
-	// loudly rather than serve without it. Drop this once broker lands.
-	if authMode == AuthBroker {
-		return ServerConfig{}, fmt.Errorf("MCP_AUTH_MODE=broker is not implemented yet; use off or bearer")
-	}
-
+	// Both bearer and broker validate the resulting token, so both load OIDC.
 	var oidc OIDCConfig
-	if authMode == AuthBearer {
+	var broker BrokerConfig
+	if authMode == AuthBearer || authMode == AuthBroker {
 		o, err := loadOIDC()
 		if err != nil {
 			return ServerConfig{}, err
 		}
 		oidc = o
+	}
+	if authMode == AuthBroker {
+		b, err := loadBroker()
+		if err != nil {
+			return ServerConfig{}, err
+		}
+		broker = b
 	}
 
 	return ServerConfig{
@@ -135,6 +158,7 @@ func loadServer() (ServerConfig, error) {
 		HTTPAddr:  envString("MCP_HTTP_ADDR", ":8080"),
 		AuthMode:  authMode,
 		OIDC:      oidc,
+		Broker:    broker,
 	}, nil
 }
 
@@ -164,6 +188,55 @@ func loadOIDC() (OIDCConfig, error) {
 		IdentityClaim: envString("OIDC_IDENTITY_CLAIM", "email"),
 		RequiredClaim: requiredClaim,
 		RequiredValue: requiredValue,
+	}, nil
+}
+
+// loadBroker reads the interactive-broker settings. The public URL, upstream
+// endpoints, and pre-registered client id/secret are all required — the broker
+// cannot function without any of them, so fail loudly rather than serve a broken
+// login flow.
+func loadBroker() (BrokerConfig, error) {
+	required := func(key string) (string, error) {
+		v := strings.TrimSpace(envString(key, ""))
+		if v == "" {
+			return "", fmt.Errorf("%s is required when MCP_AUTH_MODE=broker", key)
+		}
+		return v, nil
+	}
+	publicURL, err := required("MCP_PUBLIC_URL")
+	if err != nil {
+		return BrokerConfig{}, err
+	}
+	clientID, err := required("OIDC_CLIENT_ID")
+	if err != nil {
+		return BrokerConfig{}, err
+	}
+	clientSecret, err := required("OIDC_CLIENT_SECRET")
+	if err != nil {
+		return BrokerConfig{}, err
+	}
+	authURL, err := required("OIDC_AUTHORIZE_URL")
+	if err != nil {
+		return BrokerConfig{}, err
+	}
+	tokenURL, err := required("OIDC_TOKEN_URL")
+	if err != nil {
+		return BrokerConfig{}, err
+	}
+
+	var hosts []string
+	for _, h := range strings.Split(envString("MCP_ALLOWED_REDIRECT_HOSTS", ""), ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			hosts = append(hosts, h)
+		}
+	}
+	return BrokerConfig{
+		PublicURL:            strings.TrimRight(publicURL, "/"),
+		ClientID:             clientID,
+		ClientSecret:         clientSecret,
+		UpstreamAuthURL:      authURL,
+		UpstreamTokenURL:     tokenURL,
+		AllowedRedirectHosts: hosts,
 	}, nil
 }
 

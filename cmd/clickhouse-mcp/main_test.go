@@ -49,7 +49,8 @@ func serveOnFreePort(t *testing.T, s *mcp.Server) (addr string, stop func(), don
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done = make(chan error, 1)
-	go func() { done <- runHTTP(ctx, s, ln, nil) }()
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, nil)
+	go func() { done <- runHTTP(ctx, ln, handler) }()
 	return ln.Addr().String(), cancel, done
 }
 
@@ -157,7 +158,8 @@ func TestRunHTTP_PropagatesServeError(t *testing.T) {
 	}
 	s := mcp.NewServer(&mcp.Implementation{Name: "test"}, nil)
 	done := make(chan error, 1)
-	go func() { done <- runHTTP(context.Background(), s, ln, nil) }() // ctx never cancels
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, nil)
+	go func() { done <- runHTTP(context.Background(), ln, handler) }() // ctx never cancels
 
 	// Closing the listener makes Serve return a real error regardless of whether
 	// it has reached Accept yet, so no synchronizing sleep is needed.
@@ -173,30 +175,31 @@ func TestRunHTTP_PropagatesServeError(t *testing.T) {
 	}
 }
 
-func TestAuthMiddleware_OffIsNil(t *testing.T) {
-	mw, err := authMiddleware(context.Background(), config.ServerConfig{AuthMode: config.AuthOff})
-	if err != nil || mw != nil {
-		t.Errorf("auth off should yield no middleware: mw=%v err=%v", mw != nil, err)
+func testMCPServer() *mcp.Server { return mcp.NewServer(&mcp.Implementation{Name: "t"}, nil) }
+
+func TestBuildHTTPHandler_OffYieldsHandler(t *testing.T) {
+	h, err := buildHTTPHandler(context.Background(), testMCPServer(), config.ServerConfig{AuthMode: config.AuthOff})
+	if err != nil || h == nil {
+		t.Errorf("auth off should yield the plain handler: h=%v err=%v", h != nil, err)
 	}
 }
 
-// An auth mode config accepts but that isn't wired here must fail closed — never
-// return a nil (no-gate) middleware, which would serve unauthenticated. This
-// pins the security guarantee: a refactor turning the default arm into
-// `return nil, nil` would flip this test red.
-func TestAuthMiddleware_UnwiredModeFailsClosed(t *testing.T) {
-	mw, err := authMiddleware(context.Background(), config.ServerConfig{AuthMode: config.AuthBroker})
-	if err == nil || mw != nil {
-		t.Errorf("an unwired auth mode must fail closed (nil mw + error), got mw=%v err=%v", mw != nil, err)
+// An auth mode that isn't wired must fail closed — never return a handler, which
+// would serve unauthenticated. Pins the security guarantee: a refactor turning the
+// default arm into `return mcpHandler, nil` would flip this test red.
+func TestBuildHTTPHandler_UnwiredModeFailsClosed(t *testing.T) {
+	h, err := buildHTTPHandler(context.Background(), testMCPServer(), config.ServerConfig{AuthMode: config.AuthMode("future-mode")})
+	if err == nil || h != nil {
+		t.Errorf("an unwired auth mode must fail closed (nil handler + error), got h=%v err=%v", h != nil, err)
 	}
 }
 
-func TestAuthMiddleware_BearerFailsOnBadIssuer(t *testing.T) {
+func TestBuildHTTPHandler_BearerFailsOnBadIssuer(t *testing.T) {
 	// Discovery must fail fast at startup, not per-request. Bound the context so a
 	// dropped SYN fails the test rather than hanging the suite.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := authMiddleware(ctx, config.ServerConfig{
+	_, err := buildHTTPHandler(ctx, testMCPServer(), config.ServerConfig{
 		AuthMode: config.AuthBearer,
 		OIDC: config.OIDCConfig{
 			Issuer:      "http://127.0.0.1:1/nonexistent", // nothing listening
@@ -208,10 +211,10 @@ func TestAuthMiddleware_BearerFailsOnBadIssuer(t *testing.T) {
 	}
 }
 
-// A reachable issuer must yield a real (non-nil) middleware. Only the discovery
-// doc is needed — NewVerifier resolves endpoints at construction, without minting
-// a token.
-func TestAuthMiddleware_BearerReturnsGate(t *testing.T) {
+// A reachable issuer must yield a real (non-nil) handler. Only the discovery doc
+// is needed — NewVerifier resolves endpoints at construction, without minting a
+// token.
+func TestBuildHTTPHandler_BearerReturnsHandler(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -223,11 +226,11 @@ func TestAuthMiddleware_BearerReturnsGate(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	mw, err := authMiddleware(ctx, config.ServerConfig{
+	h, err := buildHTTPHandler(ctx, testMCPServer(), config.ServerConfig{
 		AuthMode: config.AuthBearer,
 		OIDC:     config.OIDCConfig{Issuer: srv.URL, ResourceURI: "https://mcp.example"},
 	})
-	if err != nil || mw == nil {
-		t.Errorf("bearer with a reachable issuer should yield a gate: mw=%v err=%v", mw != nil, err)
+	if err != nil || h == nil {
+		t.Errorf("bearer with a reachable issuer should yield a handler: h=%v err=%v", h != nil, err)
 	}
 }

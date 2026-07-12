@@ -59,17 +59,33 @@ func TestLoad_HTTPAddrDefault(t *testing.T) {
 }
 
 // Load must reject a bad or incomplete server config rather than start with it:
-// an unknown transport/mode, the not-yet-wired broker mode, or bearer without the
-// issuer/audience it needs to validate a token. Per-row t.Run so each row's
-// t.Setenv is restored before the next.
+// an unknown transport/mode, bearer without the issuer/audience it needs, or
+// broker missing a required broker setting. Per-row t.Run so each row's t.Setenv
+// is restored before the next.
 func TestLoad_RejectsInvalidServerConfig(t *testing.T) {
+	// A fully-valid bearer base, so broker rows fail only on the broker field under test.
+	brokerBase := func(extra map[string]string) map[string]string {
+		m := map[string]string{
+			"MCP_AUTH_MODE": "broker", "OIDC_ISSUER": "https://idp.example",
+			"MCP_RESOURCE_URI": "https://mcp.example",
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
 	cases := []struct {
 		name string
 		env  map[string]string
 	}{
 		{"unknown transport", map[string]string{"MCP_TRANSPORT": "grpc"}},
 		{"unknown auth mode", map[string]string{"MCP_AUTH_MODE": "magic"}},
-		{"broker not implemented", map[string]string{"MCP_AUTH_MODE": "broker"}},
+		{"broker without public url", brokerBase(map[string]string{
+			"OIDC_CLIENT_ID": "id", "OIDC_CLIENT_SECRET": "s", "OIDC_AUTHORIZE_URL": "https://idp/a", "OIDC_TOKEN_URL": "https://idp/t",
+		})},
+		{"broker without client id", brokerBase(map[string]string{
+			"MCP_PUBLIC_URL": "https://mcp.example", "OIDC_CLIENT_SECRET": "s", "OIDC_AUTHORIZE_URL": "https://idp/a", "OIDC_TOKEN_URL": "https://idp/t",
+		})},
 		{"bearer without issuer", map[string]string{"MCP_AUTH_MODE": "bearer", "MCP_RESOURCE_URI": "https://mcp.example"}},
 		{"bearer without resource uri", map[string]string{"MCP_AUTH_MODE": "bearer", "OIDC_ISSUER": "https://idp.example"}},
 		{"whitespace issuer is not set", map[string]string{"MCP_AUTH_MODE": "bearer", "OIDC_ISSUER": "  ", "MCP_RESOURCE_URI": "https://mcp.example"}},
@@ -107,5 +123,40 @@ func TestLoad_BearerOIDC(t *testing.T) {
 	}
 	if o.RequiredClaim != "" {
 		t.Errorf("access gate should be empty when unset, got %q", o.RequiredClaim)
+	}
+}
+
+// broker with all required settings loads: the bearer OIDC (it still validates the
+// token) plus the broker fields, with the public URL trimmed and hosts split.
+func TestLoad_BrokerConfig(t *testing.T) {
+	setEnv(t, map[string]string{
+		"MCP_AUTH_MODE":              "broker",
+		"MCP_TRANSPORT":              "http",
+		"OIDC_ISSUER":                "https://idp.example",
+		"MCP_RESOURCE_URI":           "https://mcp.example",
+		"MCP_PUBLIC_URL":             "https://mcp.example/", // trailing slash trimmed
+		"OIDC_CLIENT_ID":             "app-123",
+		"OIDC_CLIENT_SECRET":         "shh",
+		"OIDC_AUTHORIZE_URL":         "https://idp.example/authorize",
+		"OIDC_TOKEN_URL":             "https://idp.example/token",
+		"MCP_ALLOWED_REDIRECT_HOSTS": "claude.ai, cursor.sh",
+	})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("broker with all settings should load: %v", err)
+	}
+	b := cfg.Server.Broker
+	if b.PublicURL != "https://mcp.example" {
+		t.Errorf("public URL should be trimmed of trailing slash, got %q", b.PublicURL)
+	}
+	if b.ClientID != "app-123" || b.ClientSecret != "shh" {
+		t.Errorf("client creds not carried: %+v", b)
+	}
+	if len(b.AllowedRedirectHosts) != 2 || b.AllowedRedirectHosts[0] != "claude.ai" || b.AllowedRedirectHosts[1] != "cursor.sh" {
+		t.Errorf("allowed hosts not split/trimmed: %v", b.AllowedRedirectHosts)
+	}
+	// broker still loads the bearer OIDC.
+	if cfg.Server.OIDC.Issuer != "https://idp.example" {
+		t.Errorf("broker should also load OIDC, got %+v", cfg.Server.OIDC)
 	}
 }
