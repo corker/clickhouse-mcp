@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -219,14 +220,16 @@ func TestLoad_BrokerEntraAudienceOverride(t *testing.T) {
 	}
 }
 
-// The entra provider fails loudly when a required AZURE_* var is missing, and an
-// unknown provider name is rejected rather than silently treated as generic.
+// Each named provider fails loudly when one of its required vars is missing, and an
+// unknown provider name is rejected rather than silently treated as generic. Assert
+// the error names the offending var/provider, so a failure for an unrelated reason
+// (e.g. a renamed base var) can't pass the row and hide a missing validation.
 func TestLoad_BrokerProviderErrors(t *testing.T) {
 	base := map[string]string{
 		"MCP_AUTH_MODE": "broker", "MCP_TRANSPORT": "http", "MCP_PUBLIC_URL": "https://mcp.example",
 	}
-	entra := func(extra map[string]string) map[string]string {
-		m := map[string]string{"MCP_BROKER_PROVIDER": "entra"}
+	withBase := func(extra map[string]string) map[string]string {
+		m := map[string]string{}
 		for k, v := range base {
 			m[k] = v
 		}
@@ -236,32 +239,35 @@ func TestLoad_BrokerProviderErrors(t *testing.T) {
 		return m
 	}
 	cases := []struct {
-		name string
-		env  map[string]string
+		name    string
+		wantMsg string
+		env     map[string]string
 	}{
-		{"entra without tenant", entra(map[string]string{"AZURE_CLIENT_ID": "c", "AZURE_CLIENT_SECRET": "s"})},
-		{"entra without client id", entra(map[string]string{"AZURE_TENANT_ID": "t", "AZURE_CLIENT_SECRET": "s"})},
-		{"entra without secret", entra(map[string]string{"AZURE_TENANT_ID": "t", "AZURE_CLIENT_ID": "c"})},
-		{"unknown provider", func() map[string]string {
-			m := map[string]string{"MCP_BROKER_PROVIDER": "okta-magic"}
-			for k, v := range base {
-				m[k] = v
-			}
-			return m
-		}()},
+		{"entra without tenant", "AZURE_TENANT_ID", withBase(map[string]string{"MCP_BROKER_PROVIDER": "entra", "AZURE_CLIENT_ID": "c", "AZURE_CLIENT_SECRET": "s"})},
+		{"entra without client id", "AZURE_CLIENT_ID", withBase(map[string]string{"MCP_BROKER_PROVIDER": "entra", "AZURE_TENANT_ID": "t", "AZURE_CLIENT_SECRET": "s"})},
+		{"entra without secret", "AZURE_CLIENT_SECRET", withBase(map[string]string{"MCP_BROKER_PROVIDER": "entra", "AZURE_TENANT_ID": "t", "AZURE_CLIENT_ID": "c"})},
+		{"google without client id", "GOOGLE_CLIENT_ID", withBase(map[string]string{"MCP_BROKER_PROVIDER": "google", "GOOGLE_CLIENT_SECRET": "s"})},
+		{"google without secret", "GOOGLE_CLIENT_SECRET", withBase(map[string]string{"MCP_BROKER_PROVIDER": "google", "GOOGLE_CLIENT_ID": "c"})},
+		{"unknown provider", "unknown provider", withBase(map[string]string{"MCP_BROKER_PROVIDER": "okta-magic"})},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			setEnv(t, tt.env)
-			if _, err := Load(); err == nil {
-				t.Errorf("%s: Load should error", tt.name)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("%s: Load should error", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("%s: error should name %q, got %v", tt.name, tt.wantMsg, err)
 			}
 		})
 	}
 }
 
-// The google provider derives fixed endpoints (no tenant in the URL) from the
-// client id/secret alone, defaulting the audience to the client id.
+// The google provider selects Google's fixed endpoints (no tenant in the URL) from
+// the client id/secret alone, defaulting the audience to the client id. The endpoint
+// assertions pin the exact well-known OAuth URLs a broker POSTs the client secret to
+// — a silent typo there is a real defect, so the constants are guarded deliberately.
 func TestLoad_BrokerGoogleProvider(t *testing.T) {
 	setEnv(t, map[string]string{
 		"MCP_AUTH_MODE":        "broker",
@@ -287,5 +293,51 @@ func TestLoad_BrokerGoogleProvider(t *testing.T) {
 	}
 	if b.ClientID != "g-client" || b.ClientSecret != "g-secret" {
 		t.Errorf("client creds not carried from GOOGLE_* vars: %+v", b)
+	}
+}
+
+// google, like entra, lets an operator override the client-id audience default via
+// MCP_RESOURCE_URI (for a custom API audience).
+func TestLoad_BrokerGoogleAudienceOverride(t *testing.T) {
+	setEnv(t, map[string]string{
+		"MCP_AUTH_MODE":        "broker",
+		"MCP_TRANSPORT":        "http",
+		"MCP_BROKER_PROVIDER":  "google",
+		"GOOGLE_CLIENT_ID":     "g-client",
+		"GOOGLE_CLIENT_SECRET": "g-secret",
+		"MCP_PUBLIC_URL":       "https://mcp.example",
+		"MCP_RESOURCE_URI":     "api://mcp-clickhouse",
+	})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("google provider with audience override should load: %v", err)
+	}
+	if cfg.Server.OIDC.ResourceURI != "api://mcp-clickhouse" {
+		t.Errorf("explicit MCP_RESOURCE_URI should override the client-id default, got %q", cfg.Server.OIDC.ResourceURI)
+	}
+}
+
+// A whitespace MCP_RESOURCE_URI on a named provider trims to empty, collapsing the
+// client-id audience default — Load must reject it rather than serve an empty
+// audience (which would validate a token minted for any resource). Pins both the
+// TrimSpace in the derive step and the downstream empty-audience guard.
+func TestLoad_BrokerRejectsEmptyDerivedAudience(t *testing.T) {
+	for _, provider := range []string{"entra", "google"} {
+		t.Run(provider, func(t *testing.T) {
+			env := map[string]string{
+				"MCP_AUTH_MODE": "broker", "MCP_TRANSPORT": "http",
+				"MCP_BROKER_PROVIDER": provider, "MCP_PUBLIC_URL": "https://mcp.example",
+				"MCP_RESOURCE_URI": "   ", // whitespace → trims to empty, overriding the client-id default
+			}
+			if provider == "entra" {
+				env["AZURE_TENANT_ID"], env["AZURE_CLIENT_ID"], env["AZURE_CLIENT_SECRET"] = "t", "c", "s"
+			} else {
+				env["GOOGLE_CLIENT_ID"], env["GOOGLE_CLIENT_SECRET"] = "c", "s"
+			}
+			setEnv(t, env)
+			if _, err := Load(); err == nil {
+				t.Errorf("%s: a whitespace MCP_RESOURCE_URI must be rejected, not accepted as an empty audience", provider)
+			}
+		})
 	}
 }

@@ -111,6 +111,51 @@ func TestVerify_Rejects(t *testing.T) {
 	}
 }
 
+// End-to-end aud seam: the audience a named provider DERIVES (Entra defaults aud to
+// the client id) must be the audience the verifier ENFORCES. The config tests prove
+// the value is computed; the Verify tests prove the verifier enforces whatever aud it
+// is given — but only this test proves the derived value is the one wired in. (The
+// issuer is the fake one, not the real Microsoft endpoint the entra provider derives,
+// since that seam is the aud field, not discovery.)
+func TestVerify_EnforcesDerivedAudience(t *testing.T) {
+	t.Setenv("MCP_AUTH_MODE", "broker")
+	t.Setenv("MCP_TRANSPORT", "http")
+	t.Setenv("MCP_BROKER_PROVIDER", "entra")
+	t.Setenv("AZURE_TENANT_ID", "tenant-1")
+	t.Setenv("AZURE_CLIENT_ID", "the-client-id")
+	t.Setenv("AZURE_CLIENT_SECRET", "secret")
+	t.Setenv("MCP_PUBLIC_URL", "https://mcp.example")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	derivedAud := cfg.Server.OIDC.ResourceURI
+	if derivedAud != "the-client-id" {
+		t.Fatalf("precondition: entra should derive aud=client id, got %q", derivedAud)
+	}
+
+	fi := newFakeIssuer(t)
+	v, err := NewVerifier(context.Background(), config.OIDCConfig{
+		Issuer:       fi.issuerURL(),
+		ResourceURI:  derivedAud, // the aud the provider derived, not a hardcoded constant
+		AccessPolicy: cfg.Server.OIDC.AccessPolicy,
+	})
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
+	// A token carrying the derived audience verifies; one carrying the server URL
+	// (the intuitive-but-wrong value Entra never stamps) is rejected.
+	good := fi.mint(t, map[string]any{"aud": derivedAud, "email": "u@e.com"})
+	if _, err := v.Verify(context.Background(), good, nil); err != nil {
+		t.Errorf("token with the derived audience must verify: %v", err)
+	}
+	bad := fi.mint(t, map[string]any{"aud": "https://mcp.example", "email": "u@e.com"})
+	if _, err := v.Verify(context.Background(), bad, nil); err == nil {
+		t.Error("token with the server URL as audience must be rejected (Entra stamps aud=client id)")
+	}
+}
+
 // The access gate: a token missing the required claim/value is rejected even
 // though it is otherwise valid; one that has it passes.
 func TestVerify_AccessGate(t *testing.T) {
