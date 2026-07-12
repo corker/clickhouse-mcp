@@ -75,9 +75,8 @@ type BrokerConfig struct {
 	Scopes []string
 }
 
-// AccessPolicy maps a token's claims to an identity and an allow/deny decision. It
-// is separated from the token-validation settings (issuer, resource URI) because the
-// identity + gating step is independent of how the token was validated.
+// AccessPolicy maps a token's claims to an identity and an allow/deny decision,
+// applied after (and independently of) token validation.
 type AccessPolicy struct {
 	// IdentityClaim names the claim used as the user's identity (default email,
 	// then preferred_username).
@@ -195,10 +194,8 @@ type derivedProvider struct {
 }
 
 // deriveProvider dispatches on MCP_BROKER_PROVIDER. generic returns nil (every
-// endpoint explicit); each named provider derives its own endpoints and, crucially,
-// its own audience default — the aud rule is per-provider policy (Entra/Google stamp
-// aud = the client id), not a shared constant, so a provider whose aud differs
-// cannot inherit the wrong default.
+// endpoint explicit); each named provider derives its own endpoints and audience
+// default in its own function.
 func deriveProvider() (*derivedProvider, error) {
 	provider := strings.TrimSpace(envString("MCP_BROKER_PROVIDER", "generic"))
 	switch provider {
@@ -230,11 +227,9 @@ func requireEnv(provider string, keys ...string) (map[string]string, error) {
 // deriveEntra derives the Entra endpoints from the tenant id. An Entra v2.0 access
 // token's aud is the app (client) id, not the server URL, so the audience defaults
 // to the client id (overridable via MCP_RESOURCE_URI for a custom api:// scope).
-// Provider endpoint bases. Package-level (not env-configurable) so an operator
-// cannot repoint the "trusted Entra/Google" flow at a rogue endpoint — the whole
-// point of a named provider is that its endpoints are fixed. They are variables
-// rather than constants solely so an in-package validation harness can point them
-// at a mock IdP; production always uses the real hosts.
+// Provider endpoint bases. Not env-configurable, so an operator cannot repoint a
+// named provider's flow at a rogue endpoint. They are vars, not consts, only so an
+// in-package test can point them at a mock IdP; production uses the real hosts.
 var (
 	entraAuthorityBase = "https://login.microsoftonline.com"
 	googleAccountsBase = "https://accounts.google.com"

@@ -111,12 +111,10 @@ func TestVerify_Rejects(t *testing.T) {
 	}
 }
 
-// End-to-end aud seam: the audience a named provider DERIVES (Entra defaults aud to
-// the client id) must be the audience the verifier ENFORCES. The config tests prove
-// the value is computed; the Verify tests prove the verifier enforces whatever aud it
-// is given — but only this test proves the derived value is the one wired in. (The
-// issuer is the fake one, not the real Microsoft endpoint the entra provider derives,
-// since that seam is the aud field, not discovery.)
+// End-to-end aud seam: the audience a named provider DERIVES must be the one the
+// verifier ENFORCES. Config tests prove the value is computed and Verify tests prove
+// the verifier enforces whatever aud it is given; only this test wires the derived
+// value into the verifier to prove they are the same audience.
 func TestVerify_EnforcesDerivedAudience(t *testing.T) {
 	t.Setenv("MCP_AUTH_MODE", "broker")
 	t.Setenv("MCP_TRANSPORT", "http")

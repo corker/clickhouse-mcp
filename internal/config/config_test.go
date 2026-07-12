@@ -266,8 +266,8 @@ func TestLoad_BrokerProviderErrors(t *testing.T) {
 
 // The google provider selects Google's fixed endpoints (no tenant in the URL) from
 // the client id/secret alone, defaulting the audience to the client id. The endpoint
-// assertions pin the exact well-known OAuth URLs a broker POSTs the client secret to
-// — a silent typo there is a real defect, so the constants are guarded deliberately.
+// assertions pin the exact well-known OAuth URLs the broker POSTs the client secret
+// to, where a silent typo is a real defect.
 func TestLoad_BrokerGoogleProvider(t *testing.T) {
 	setEnv(t, map[string]string{
 		"MCP_AUTH_MODE":        "broker",
