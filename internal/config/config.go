@@ -48,6 +48,7 @@ type Config struct {
 type ServerConfig struct {
 	Transport Transport
 	// HTTPAddr is the listen address for TransportHTTP (host:port), e.g. ":8080".
+	// Not validated here — a malformed value fails at net.Listen in main.
 	HTTPAddr string
 	AuthMode AuthMode
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +13,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// testClient is a dedicated client so tests never share a connection pool with
+// each other (or with a prior test's now-dead :0 server) via http.DefaultClient.
+var testClient = &http.Client{}
 
 // postMCP sends one streamable-HTTP MCP message to the server at addr. sessionID
 // is optional (empty on the initialize call, then set from the response header).
@@ -25,7 +30,7 @@ func postMCP(addr, body, sessionID string) (*http.Response, error) {
 	if sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", sessionID)
 	}
-	return http.DefaultClient.Do(req)
+	return testClient.Do(req)
 }
 
 const initBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
@@ -90,10 +95,15 @@ func TestRunHTTP_ServesAndShutsDown(t *testing.T) {
 // Regression guard: reverting to Close would break this.
 func TestRunHTTP_DrainsInflightOnShutdown(t *testing.T) {
 	s := mcp.NewServer(&mcp.Implementation{Name: "test"}, nil)
+	// The tool signals when it has actually started, then blocks — so the test
+	// triggers shutdown only once the request is provably in-flight (a fixed
+	// sleep would race a slow CI box: shutdown could fire before the call began).
+	started := make(chan struct{})
 	type noArgs struct{}
 	mcp.AddTool(s, &mcp.Tool{Name: "slow"}, func(_ context.Context, _ *mcp.CallToolRequest, _ noArgs) (*mcp.CallToolResult, any, error) {
-		time.Sleep(300 * time.Millisecond)
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "done"}}}, nil, nil
+		close(started)
+		time.Sleep(200 * time.Millisecond)
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "tool-finished"}}}, nil, nil
 	})
 	addr, stop, done := serveOnFreePort(t, s)
 	sid := waitReady(t, addr)
@@ -101,6 +111,7 @@ func TestRunHTTP_DrainsInflightOnShutdown(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	var status int
+	var body string
 	var callErr error
 	go func() {
 		defer wg.Done()
@@ -110,19 +121,25 @@ func TestRunHTTP_DrainsInflightOnShutdown(t *testing.T) {
 			return
 		}
 		status = resp.StatusCode
-		_, _ = io.Copy(io.Discard, resp.Body)
+		b, _ := io.ReadAll(resp.Body)
+		body = string(b)
 		_ = resp.Body.Close()
 	}()
 
-	time.Sleep(80 * time.Millisecond) // the slow tool is now mid-flight
-	stop()                            // shut down WHILE the call runs
+	<-started // the tool is now executing; the request is in-flight
+	stop()    // shut down WHILE the call runs
 	wg.Wait()
 
 	if callErr != nil {
-		t.Errorf("in-flight call was severed, not drained: %v", callErr)
+		t.Fatalf("in-flight call was severed, not drained: %v", callErr)
 	}
 	if status != http.StatusOK {
 		t.Errorf("in-flight call status = %d, want 200 (drained)", status)
+	}
+	// The tool's output must be in the response — proving the call ran to
+	// completion (drained), not that it merely got a status line before a sever.
+	if !strings.Contains(body, "tool-finished") {
+		t.Errorf("drained response must contain the tool output; got %q", body)
 	}
 	<-done
 }
@@ -138,13 +155,14 @@ func TestRunHTTP_PropagatesServeError(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- runHTTP(context.Background(), s, ln) }() // ctx never cancels
 
-	time.Sleep(50 * time.Millisecond)
-	_ = ln.Close() // Serve returns a real error, not ErrServerClosed
+	// Closing the listener makes Serve return a real error regardless of whether
+	// it has reached Accept yet, so no synchronizing sleep is needed.
+	_ = ln.Close()
 
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Error("a listener error should propagate, not be swallowed")
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("a listener error should propagate, not be swallowed; got %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("runHTTP hung after listener closed")

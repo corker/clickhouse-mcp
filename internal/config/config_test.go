@@ -58,27 +58,26 @@ func TestLoad_HTTPAddrDefault(t *testing.T) {
 	}
 }
 
-func TestLoad_RejectsUnknownTransport(t *testing.T) {
-	setEnv(t, map[string]string{"MCP_TRANSPORT": "grpc"})
-	if _, err := Load(); err == nil {
-		t.Error("unknown transport should error")
+// Load must reject a bad or not-yet-supported server config rather than start
+// with it. bearer/broker parse as valid modes but aren't wired yet, so they must
+// fail loudly rather than silently serve unauthenticated. Per-row t.Run so each
+// row's t.Setenv is restored before the next.
+func TestLoad_RejectsInvalidServerConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"unknown transport", map[string]string{"MCP_TRANSPORT": "grpc"}},
+		{"unknown auth mode", map[string]string{"MCP_AUTH_MODE": "magic"}},
+		{"bearer not implemented", map[string]string{"MCP_AUTH_MODE": "bearer"}},
+		{"broker not implemented", map[string]string{"MCP_AUTH_MODE": "broker"}},
 	}
-}
-
-func TestLoad_RejectsUnknownAuthMode(t *testing.T) {
-	setEnv(t, map[string]string{"MCP_AUTH_MODE": "magic"})
-	if _, err := Load(); err == nil {
-		t.Error("unknown auth mode should error")
-	}
-}
-
-// bearer/broker parse as valid modes but are not implemented yet, so Load must
-// fail loudly rather than silently serve unauthenticated.
-func TestLoad_RejectsUnimplementedAuthModes(t *testing.T) {
-	for _, mode := range []string{"bearer", "broker"} {
-		setEnv(t, map[string]string{"MCP_AUTH_MODE": mode})
-		if _, err := Load(); err == nil {
-			t.Errorf("auth mode %q should error until implemented", mode)
-		}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			setEnv(t, tt.env)
+			if _, err := Load(); err == nil {
+				t.Errorf("%s: Load should error", tt.name)
+			}
+		})
 	}
 }
