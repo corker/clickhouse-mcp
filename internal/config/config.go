@@ -97,7 +97,6 @@ type OIDCConfig struct {
 	// ResourceURI is this server's canonical identifier; a token's aud must equal
 	// it (RFC 8707), so a token minted for another service cannot be replayed here.
 	ResourceURI string
-	// AccessPolicy (identity claim + access gate) is applied after token validation.
 	AccessPolicy
 }
 
