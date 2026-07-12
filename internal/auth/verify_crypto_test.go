@@ -46,6 +46,15 @@ func TestVerify_ValidToken(t *testing.T) {
 	if info.UserID != "user@example.com" {
 		t.Errorf("UserID = %q, want user@example.com", info.UserID)
 	}
+	// Expiration is load-bearing — the SDK re-checks it downstream; a zero value
+	// would make the session look immediately expired or never-expiring.
+	if info.Expiration.IsZero() || !info.Expiration.After(time.Now()) {
+		t.Errorf("Expiration should be a future time, got %v", info.Expiration)
+	}
+	// Extra carries the raw claims for downstream use.
+	if info.Extra["email"] != "user@example.com" {
+		t.Errorf("Extra should carry the claims, got %v", info.Extra)
+	}
 }
 
 // The security-critical negatives: each must be rejected as ErrInvalidToken.
@@ -56,27 +65,32 @@ func TestVerify_Rejects(t *testing.T) {
 	tests := []struct {
 		name  string
 		token func() string
+		// wantMsg, when set, pins the rejection to a specific gate — otherwise a
+		// case could silently start failing at a different (earlier) gate and still
+		// pass the ErrInvalidToken class check. Used for our own gates (audience,
+		// identity); go-oidc's sig/iss/exp gates can't be confused for each other.
+		wantMsg string
 	}{
 		{"wrong audience (token for another service)", func() string {
 			return fi.mint(t, map[string]any{"aud": "https://other.service"})
-		}},
+		}, "audience"},
 		{"no audience", func() string {
 			return fi.mint(t, map[string]any{})
-		}},
+		}, "audience"},
 		{"expired", func() string {
 			return fi.mint(t, map[string]any{"aud": resourceURI, "exp": time.Now().Add(-time.Hour).Unix()})
-		}},
+		}, ""},
 		{"wrong issuer", func() string {
 			return fi.mint(t, map[string]any{"aud": resourceURI, "iss": "https://evil.example"})
-		}},
+		}, ""},
 		{"signed by a different key (JWKS mismatch)", func() string {
 			return other.mint(t, map[string]any{"aud": resourceURI, "iss": fi.issuerURL()})
-		}},
+		}, ""},
 		{"no identity claim (would collapse sessions)", func() string {
 			// valid aud/exp/iss but no email/preferred_username/sub
 			return fi.mint(t, map[string]any{"aud": resourceURI})
-		}},
-		{"garbage", func() string { return "not.a.jwt" }},
+		}, "no usable identity"},
+		{"garbage", func() string { return "not.a.jwt" }, ""},
 	}
 	v := newTestVerifier(t, fi, "", "")
 	for _, tt := range tests {
@@ -87,6 +101,9 @@ func TestVerify_Rejects(t *testing.T) {
 			}
 			if !errors.Is(err, mcpauth.ErrInvalidToken) {
 				t.Errorf("want ErrInvalidToken, got %v", err)
+			}
+			if tt.wantMsg != "" && !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("want rejection at the %q gate, got %v", tt.wantMsg, err)
 			}
 		})
 	}
