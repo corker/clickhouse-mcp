@@ -94,8 +94,10 @@ func loadServer() (ServerConfig, error) {
 		return ServerConfig{}, fmt.Errorf("MCP_AUTH_MODE: unknown mode %q (want off, bearer, or broker)", authMode)
 	}
 
-	// bearer/broker are not implemented yet; fail loudly rather than serve
-	// unauthenticated while the operator believes auth is on.
+	// bearer/broker are valid modes (above) but not wired yet; fail loudly rather
+	// than serve unauthenticated while the operator believes auth is on. Narrow
+	// this guard as each mode's request-path lands, or a configured mode will be
+	// accepted here but silently do nothing.
 	if authMode != AuthOff {
 		return ServerConfig{}, fmt.Errorf("MCP_AUTH_MODE=%s is not implemented yet; only off is available in this build", authMode)
 	}
