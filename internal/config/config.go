@@ -18,8 +18,7 @@ const (
 	TransportHTTP  Transport = "http"
 )
 
-// AuthMode selects how HTTP requests are authenticated (ADR-0007). off and bearer
-// are wired; broker (the interactive metadata/DCR layer) is not yet.
+// AuthMode selects how HTTP requests are authenticated (ADR-0007).
 type AuthMode string
 
 const (
@@ -52,6 +51,41 @@ type ServerConfig struct {
 	AuthMode AuthMode
 	// OIDC is populated (and required) only when AuthMode is bearer or broker.
 	OIDC OIDCConfig
+	// Broker is populated only when AuthMode is broker (the interactive shim).
+	Broker BrokerConfig
+}
+
+// BrokerConfig holds the interactive-broker settings (ADR-0008), required only for
+// MCP_AUTH_MODE=broker. It fronts an upstream IdP (e.g. Entra) that MCP clients
+// cannot use directly.
+type BrokerConfig struct {
+	// PublicURL is this server's externally reachable base URL (no trailing slash);
+	// the broker advertises its own OAuth endpoints under it.
+	PublicURL string
+	// ClientID/ClientSecret are the app pre-registered once with the upstream IdP.
+	ClientID     string
+	ClientSecret string
+	// UpstreamAuthURL/UpstreamTokenURL are the IdP's real authorize/token endpoints.
+	UpstreamAuthURL  string
+	UpstreamTokenURL string
+	// AllowedRedirectHosts are non-loopback host suffixes a client redirect_uri may
+	// use. Loopback is always allowed; empty means loopback-only (the safe default).
+	AllowedRedirectHosts []string
+	// Scopes are advertised in metadata and requested upstream.
+	Scopes []string
+}
+
+// AccessPolicy maps a token's claims to an identity and an allow/deny decision,
+// applied after (and independently of) token validation.
+type AccessPolicy struct {
+	// IdentityClaim names the claim used as the user's identity (default email,
+	// then preferred_username).
+	IdentityClaim string
+	// RequiredClaim/RequiredValue gate access: the RequiredClaim must contain
+	// RequiredValue. Empty RequiredClaim means authenticate-only (no access gate) —
+	// every authenticated principal is allowed.
+	RequiredClaim string
+	RequiredValue string
 }
 
 // OIDCConfig holds bearer-token validation settings (ADR-0007/0003). Names match
@@ -63,14 +97,7 @@ type OIDCConfig struct {
 	// ResourceURI is this server's canonical identifier; a token's aud must equal
 	// it (RFC 8707), so a token minted for another service cannot be replayed here.
 	ResourceURI string
-	// IdentityClaim names the token claim used as the user's identity (default
-	// email, then preferred_username).
-	IdentityClaim string
-	// RequiredClaim/RequiredValue gate access: the token's RequiredClaim must
-	// contain RequiredValue. Empty RequiredClaim means authenticate-only (no
-	// access gate) — every valid token from the issuer is allowed.
-	RequiredClaim string
-	RequiredValue string
+	AccessPolicy
 }
 
 func Load() (*Config, error) {
@@ -115,19 +142,34 @@ func loadServer() (ServerConfig, error) {
 		return ServerConfig{}, fmt.Errorf("MCP_AUTH_MODE: unknown mode %q (want off, bearer, or broker)", authMode)
 	}
 
-	// broker is a valid mode but its interactive layer is not wired yet; fail
-	// loudly rather than serve without it. Drop this once broker lands.
+	// A named provider (entra) derives the Entra-specific issuer/endpoints/audience
+	// from a tenant id so the operator does not hand-wire them. Only broker mode
+	// reads it; bearer mode always uses the explicit generic OIDC vars.
+	var derived *derivedProvider
 	if authMode == AuthBroker {
-		return ServerConfig{}, fmt.Errorf("MCP_AUTH_MODE=broker is not implemented yet; use off or bearer")
+		d, err := deriveProvider()
+		if err != nil {
+			return ServerConfig{}, err
+		}
+		derived = d
 	}
 
+	// Both bearer and broker validate the resulting token, so both load OIDC.
 	var oidc OIDCConfig
-	if authMode == AuthBearer {
-		o, err := loadOIDC()
+	var broker BrokerConfig
+	if authMode == AuthBearer || authMode == AuthBroker {
+		o, err := loadOIDC(derived)
 		if err != nil {
 			return ServerConfig{}, err
 		}
 		oidc = o
+	}
+	if authMode == AuthBroker {
+		b, err := loadBroker(derived)
+		if err != nil {
+			return ServerConfig{}, err
+		}
+		broker = b
 	}
 
 	return ServerConfig{
@@ -135,6 +177,97 @@ func loadServer() (ServerConfig, error) {
 		HTTPAddr:  envString("MCP_HTTP_ADDR", ":8080"),
 		AuthMode:  authMode,
 		OIDC:      oidc,
+		Broker:    broker,
+	}, nil
+}
+
+// derivedProvider holds the values a named provider computes so the operator need not
+// supply them. nil means the generic provider (all endpoints explicit).
+type derivedProvider struct {
+	Issuer       string
+	ResourceURI  string
+	AuthorizeURL string
+	TokenURL     string
+	ClientID     string
+	ClientSecret string
+}
+
+// deriveProvider dispatches on MCP_BROKER_PROVIDER. generic returns nil (every
+// endpoint explicit); each named provider derives its own endpoints and audience
+// default in its own function.
+func deriveProvider() (*derivedProvider, error) {
+	provider := strings.TrimSpace(envString("MCP_BROKER_PROVIDER", "generic"))
+	switch provider {
+	case "generic":
+		return nil, nil
+	case "entra":
+		return deriveEntra()
+	case "google":
+		return deriveGoogle()
+	default:
+		return nil, fmt.Errorf("MCP_BROKER_PROVIDER: unknown provider %q (want entra, google, or generic)", provider)
+	}
+}
+
+// requireEnv reads and trims the named env vars, failing if any is empty. The
+// message names the provider so an operator knows which var set to complete.
+func requireEnv(provider string, keys ...string) (map[string]string, error) {
+	out := make(map[string]string, len(keys))
+	for _, k := range keys {
+		v := strings.TrimSpace(envString(k, ""))
+		if v == "" {
+			return nil, fmt.Errorf("%s is required when MCP_BROKER_PROVIDER=%s", k, provider)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// deriveEntra derives the Entra endpoints from the tenant id. An Entra v2.0 access
+// token's aud is the app (client) id, not the server URL, so the audience defaults
+// to the client id (overridable via MCP_RESOURCE_URI for a custom api:// scope).
+// Provider endpoint bases. Not env-configurable, so an operator cannot repoint a
+// named provider's flow at a rogue endpoint. They are vars, not consts, only so an
+// in-package test can point them at a mock IdP; production uses the real hosts.
+var (
+	entraAuthorityBase = "https://login.microsoftonline.com"
+	googleAccountsBase = "https://accounts.google.com"
+	googleTokenBase    = "https://oauth2.googleapis.com" //nolint:gosec // G101 false positive: public Google token endpoint host, not a credential
+)
+
+func deriveEntra() (*derivedProvider, error) {
+	env, err := requireEnv("entra", "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
+	if err != nil {
+		return nil, err
+	}
+	clientID := env["AZURE_CLIENT_ID"]
+	base := entraAuthorityBase + "/" + env["AZURE_TENANT_ID"]
+	return &derivedProvider{
+		Issuer:       base + "/v2.0",
+		ResourceURI:  strings.TrimSpace(envString("MCP_RESOURCE_URI", clientID)),
+		AuthorizeURL: base + "/oauth2/v2.0/authorize",
+		TokenURL:     base + "/oauth2/v2.0/token",
+		ClientID:     clientID,
+		ClientSecret: env["AZURE_CLIENT_SECRET"],
+	}, nil
+}
+
+// deriveGoogle derives the Google endpoints (fixed — no tenant in the URL). A Google
+// access token's aud is the client id, so the audience defaults to it (overridable
+// via MCP_RESOURCE_URI).
+func deriveGoogle() (*derivedProvider, error) {
+	env, err := requireEnv("google", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")
+	if err != nil {
+		return nil, err
+	}
+	clientID := env["GOOGLE_CLIENT_ID"]
+	return &derivedProvider{
+		Issuer:       googleAccountsBase,
+		ResourceURI:  strings.TrimSpace(envString("MCP_RESOURCE_URI", clientID)),
+		AuthorizeURL: googleAccountsBase + "/o/oauth2/v2/auth",
+		TokenURL:     googleTokenBase + "/token",
+		ClientID:     clientID,
+		ClientSecret: env["GOOGLE_CLIENT_SECRET"],
 	}, nil
 }
 
@@ -142,28 +275,100 @@ func loadServer() (ServerConfig, error) {
 // (no safe default — an empty audience would validate any token); the identity
 // claim defaults to email and the access gate is optional. Values are trimmed so
 // a whitespace-only env var is treated as unset rather than a bad URL.
-func loadOIDC() (OIDCConfig, error) {
+func loadOIDC(derived *derivedProvider) (OIDCConfig, error) {
 	issuer := strings.TrimSpace(envString("OIDC_ISSUER", ""))
+	resourceURI := strings.TrimSpace(envString("MCP_RESOURCE_URI", ""))
+	if derived != nil {
+		issuer = derived.Issuer
+		resourceURI = derived.ResourceURI
+	}
 	if issuer == "" {
 		return OIDCConfig{}, fmt.Errorf("OIDC_ISSUER is required when MCP_AUTH_MODE=bearer")
 	}
-	resourceURI := strings.TrimSpace(envString("MCP_RESOURCE_URI", ""))
 	if resourceURI == "" {
 		return OIDCConfig{}, fmt.Errorf("MCP_RESOURCE_URI is required when MCP_AUTH_MODE=bearer (the audience a token must carry)")
 	}
-	requiredClaim := strings.TrimSpace(envString("OIDC_REQUIRED_CLAIM", ""))
-	requiredValue := envString("OIDC_REQUIRED_VALUE", "")
-	// A gate claim with no value is incoherent — it would deny every legitimate
-	// token — so require both or neither rather than silently locking everyone out.
-	if requiredClaim != "" && requiredValue == "" {
-		return OIDCConfig{}, fmt.Errorf("OIDC_REQUIRED_VALUE is required when OIDC_REQUIRED_CLAIM is set")
+	policy, err := loadAccessPolicy()
+	if err != nil {
+		return OIDCConfig{}, err
 	}
 	return OIDCConfig{
-		Issuer:        issuer,
-		ResourceURI:   resourceURI,
+		Issuer:       issuer,
+		ResourceURI:  resourceURI,
+		AccessPolicy: policy,
+	}, nil
+}
+
+// loadAccessPolicy reads the identity claim (default email) and the optional access
+// gate. A gate claim with no value is incoherent — it would deny every legitimate
+// principal — so require both or neither rather than silently locking everyone out.
+func loadAccessPolicy() (AccessPolicy, error) {
+	requiredClaim := strings.TrimSpace(envString("OIDC_REQUIRED_CLAIM", ""))
+	requiredValue := envString("OIDC_REQUIRED_VALUE", "")
+	if requiredClaim != "" && requiredValue == "" {
+		return AccessPolicy{}, fmt.Errorf("OIDC_REQUIRED_VALUE is required when OIDC_REQUIRED_CLAIM is set")
+	}
+	return AccessPolicy{
 		IdentityClaim: envString("OIDC_IDENTITY_CLAIM", "email"),
 		RequiredClaim: requiredClaim,
 		RequiredValue: requiredValue,
+	}, nil
+}
+
+// loadBroker reads the interactive-broker settings. The public URL, upstream
+// endpoints, and pre-registered client id/secret are all required — the broker
+// cannot function without any of them, so fail loudly rather than serve a broken
+// login flow.
+func loadBroker(derived *derivedProvider) (BrokerConfig, error) {
+	required := func(key string) (string, error) {
+		v := strings.TrimSpace(envString(key, ""))
+		if v == "" {
+			return "", fmt.Errorf("%s is required when MCP_AUTH_MODE=broker", key)
+		}
+		return v, nil
+	}
+	publicURL, err := required("MCP_PUBLIC_URL")
+	if err != nil {
+		return BrokerConfig{}, err
+	}
+
+	// The entra provider supplies the client credentials and endpoints; the generic
+	// provider requires them explicitly.
+	clientID, clientSecret, authURL, tokenURL := "", "", "", ""
+	if derived != nil {
+		clientID, clientSecret = derived.ClientID, derived.ClientSecret
+		authURL, tokenURL = derived.AuthorizeURL, derived.TokenURL
+	} else {
+		for _, f := range []struct {
+			key string
+			dst *string
+		}{
+			{"OIDC_CLIENT_ID", &clientID},
+			{"OIDC_CLIENT_SECRET", &clientSecret},
+			{"OIDC_AUTHORIZE_URL", &authURL},
+			{"OIDC_TOKEN_URL", &tokenURL},
+		} {
+			if *f.dst, err = required(f.key); err != nil {
+				return BrokerConfig{}, err
+			}
+		}
+	}
+
+	var hosts []string
+	for _, h := range strings.Split(envString("MCP_ALLOWED_REDIRECT_HOSTS", ""), ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			hosts = append(hosts, h)
+		}
+	}
+	scopes := strings.Fields(envString("OIDC_SCOPES", "openid profile email"))
+	return BrokerConfig{
+		PublicURL:            strings.TrimRight(publicURL, "/"),
+		ClientID:             clientID,
+		ClientSecret:         clientSecret,
+		UpstreamAuthURL:      authURL,
+		UpstreamTokenURL:     tokenURL,
+		AllowedRedirectHosts: hosts,
+		Scopes:               scopes,
 	}, nil
 }
 
