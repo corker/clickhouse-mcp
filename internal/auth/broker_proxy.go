@@ -305,7 +305,19 @@ func (p ProxyConfig) HandleToken(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "upstream token exchange failed", http.StatusBadGateway)
+		return
+	}
+	// Never relay a body that contains our confidential client_secret — the client
+	// is a public PKCE client and must not receive it, whatever the upstream echoed.
+	if p.ClientSecret != "" && strings.Contains(string(body), p.ClientSecret) {
+		http.Error(w, "upstream token exchange failed", http.StatusBadGateway)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, io.LimitReader(resp.Body, 1<<20))
+	_, _ = w.Write(body)
 }

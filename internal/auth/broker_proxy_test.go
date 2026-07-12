@@ -45,6 +45,14 @@ func TestValidateClientRedirect(t *testing.T) {
 		{"data scheme", "data:text/html,x", false},
 		{"has fragment", "https://claude.ai/cb#frag", false},
 		{"unparseable", "https://%zz", false},
+		// Account-takeover crux — pin these so a refactor of the host check (e.g. to
+		// u.Host instead of u.Hostname()) can't silently reopen the hole:
+		{"userinfo before evil host", "https://claude.ai@evil.com/cb", false}, // real host is evil.com
+		{"userinfo with port", "https://claude.ai:443@evil.com/cb", false},
+		{"allowed host as attacker subdomain label", "https://claude.ai.evil.com/cb", false},
+		{"scheme-relative", "//evil.com/cb", false},
+		{"uppercase allowed host", "https://CLAUDE.AI/cb", false}, // pins that matching is case-sensitive (fail-closed)
+		{"ipv6 non-loopback", "https://[2001:db8::1]/cb", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -111,37 +119,44 @@ func TestVerifyState_RejectsTampered(t *testing.T) {
 	}
 }
 
-func TestVerifyState_RejectsExpired(t *testing.T) {
+// A correctly-signed state with a timestamp outside the freshness window must be
+// rejected: too old (expired) or far in the future (only reachable if the key
+// leaked — so a compromised state can't become a long-lived replay token).
+func TestVerifyState_RejectsBadTimestamp(t *testing.T) {
 	p := testProxy()
-	// Hand-build an expired-but-correctly-signed state.
-	d := stateData{
-		Redirect:  "http://localhost/cb",
-		State:     "s",
-		Nonce:     "abcd",
-		Timestamp: time.Now().Add(-2 * maxStateAge).Unix(),
+	tests := []struct {
+		name    string
+		offset  time.Duration
+		wantMsg string
+	}{
+		{"expired", -2 * maxStateAge, "expired"},
+		{"far future", time.Hour, ""},
 	}
-	d.Sig, _ = p.stateMAC(d)
-	raw, _ := json.Marshal(d)
-	encoded := base64.RawURLEncoding.EncodeToString(raw)
-	if _, _, err := p.verifyState(encoded); err == nil || !strings.Contains(err.Error(), "expired") {
-		t.Errorf("expired state must be rejected as expired, got %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := stateData{Redirect: "http://localhost/cb", State: "s", Nonce: "abcd",
+				Timestamp: time.Now().Add(tt.offset).Unix()}
+			d.Sig, _ = p.stateMAC(d)
+			raw, _ := json.Marshal(d)
+			encoded := base64.RawURLEncoding.EncodeToString(raw)
+			_, _, err := p.verifyState(encoded)
+			if err == nil {
+				t.Fatal("a bad timestamp must be rejected")
+			}
+			if tt.wantMsg != "" && !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("want %q, got %v", tt.wantMsg, err)
+			}
+		})
 	}
 }
 
-// A far-future timestamp (only reachable if the key leaked) must be rejected too,
-// so a compromised state cannot become a long-lived replay token.
-func TestVerifyState_RejectsFuture(t *testing.T) {
+// Malformed state input (not base64, not JSON, empty) must be rejected at decode,
+// never crash or verify.
+func TestVerifyState_RejectsMalformed(t *testing.T) {
 	p := testProxy()
-	d := stateData{
-		Redirect:  "http://localhost/cb",
-		State:     "s",
-		Nonce:     "abcd",
-		Timestamp: time.Now().Add(1 * time.Hour).Unix(),
-	}
-	d.Sig, _ = p.stateMAC(d)
-	raw, _ := json.Marshal(d)
-	encoded := base64.RawURLEncoding.EncodeToString(raw)
-	if _, _, err := p.verifyState(encoded); err == nil {
-		t.Error("a far-future timestamp must be rejected")
+	for _, in := range []string{"", "!!!not-base64!!!", base64.RawURLEncoding.EncodeToString([]byte("not json"))} {
+		if _, _, err := p.verifyState(in); err == nil {
+			t.Errorf("malformed state %q must be rejected", in)
+		}
 	}
 }

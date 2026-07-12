@@ -130,3 +130,29 @@ func toStrings(v any) []string {
 	}
 	return nil
 }
+
+// NewProxy must generate a fresh 32-byte signing key each call (CSPRNG, not a
+// constant) — a shared/constant key would let one deployment forge another's state.
+func TestNewProxy_GeneratesDistinctKeys(t *testing.T) {
+	p1, err := NewProxy(ProxyConfig{Broker: testBroker()})
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+	if len(p1.stateKey) != 32 {
+		t.Errorf("state key = %d bytes, want 32", len(p1.stateKey))
+	}
+	allZero := true
+	for _, b := range p1.stateKey {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		t.Error("state key must not be all-zero")
+	}
+	p2, _ := NewProxy(ProxyConfig{Broker: testBroker()})
+	if string(p1.stateKey) == string(p2.stateKey) {
+		t.Error("two NewProxy calls must produce different keys")
+	}
+}

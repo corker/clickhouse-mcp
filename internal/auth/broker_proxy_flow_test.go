@@ -160,6 +160,35 @@ func TestProxyFlow_TokenExchange(t *testing.T) {
 	if fu.gotTokenForm.Get("code_verifier") != "the-pkce-verifier" {
 		t.Error("PKCE code_verifier must be passed through")
 	}
+	// The upstream redirect_uri must be the broker's fixed callback, not whatever
+	// the client sent (it must match the authorize request).
+	if fu.gotTokenForm.Get("redirect_uri") != p.Broker.PublicURL+"/oauth/callback" {
+		t.Errorf("upstream redirect_uri = %q, want the broker callback", fu.gotTokenForm.Get("redirect_uri"))
+	}
+	// The confidential client_secret must never reach the client-facing response.
+	if strings.Contains(rec.Body.String(), "broker-holds-this") {
+		t.Error("client_secret leaked into the token response")
+	}
+}
+
+// The client_secret must not leak to the client even when the upstream error body
+// or a misbehaving upstream echoes it back.
+func TestProxyFlow_TokenNeverLeaksSecret(t *testing.T) {
+	fu := newFakeUpstream(t)
+	// An upstream that echoes the secret in its (error) body — the broker must not
+	// pass that through to the public client.
+	fu.tokenResponse = `{"error":"invalid_client","detail":"secret broker-holds-this rejected"}`
+	p := proxyWithUpstream(fu)
+
+	form := url.Values{"grant_type": {"authorization_code"}, "code": {"c"}, "code_verifier": {"v"}}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	p.HandleToken(rec, req)
+
+	if strings.Contains(rec.Body.String(), "broker-holds-this") {
+		t.Error("client_secret must not appear in the client-facing response, even if the upstream echoes it")
+	}
 }
 
 // Adversarial: authorize with an evil redirect must be refused before any state
@@ -211,5 +240,63 @@ func TestProxyFlow_TokenRejectsUnsupportedGrant(t *testing.T) {
 		if fu.gotTokenForm != nil {
 			t.Errorf("grant_type %q reached the upstream — secret must not be lent", grant)
 		}
+	}
+}
+
+// Authorize must require S256 PKCE — missing, plain, or oversized challenges are
+// refused before contacting the upstream.
+func TestProxyFlow_AuthorizeRequiresPKCE(t *testing.T) {
+	fu := newFakeUpstream(t)
+	p := proxyWithUpstream(fu)
+	base := url.Values{"redirect_uri": {"http://localhost/cb"}}
+	cases := []struct {
+		name  string
+		extra url.Values
+	}{
+		{"missing challenge", url.Values{}},
+		{"plain method", url.Values{"code_challenge": {"c"}, "code_challenge_method": {"plain"}}},
+		{"oversized challenge", url.Values{"code_challenge": {strings.Repeat("a", maxOAuthField+1)}, "code_challenge_method": {"S256"}}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			q := url.Values{}
+			for k, v := range base {
+				q[k] = v
+			}
+			for k, v := range tt.extra {
+				q[k] = v
+			}
+			req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil)
+			rec := httptest.NewRecorder()
+			p.HandleAuthorize(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("want 400, got %d", rec.Code)
+			}
+		})
+	}
+}
+
+// Defense in depth: a state that is validly signed but carries a now-disallowed
+// redirect (e.g. the allow-list changed, or it was signed out-of-band) must still
+// be rejected at the callback — the callback re-validates, it does not blindly
+// trust a signed redirect.
+func TestProxyFlow_CallbackRevalidatesRedirect(t *testing.T) {
+	fu := newFakeUpstream(t)
+	p := proxyWithUpstream(fu)
+
+	// Sign a state carrying an evil redirect directly (bypassing HandleAuthorize's
+	// front-door check), then feed it to the callback with a code.
+	signed, err := p.signState("https://evil.com/steal", "s")
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?"+url.Values{
+		"code": {"c"}, "state": {signed},
+	}.Encode(), nil)
+	rec := httptest.NewRecorder()
+	p.HandleCallback(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("a signed state with a disallowed redirect must still be refused, got %d (location=%q)",
+			rec.Code, rec.Header().Get("Location"))
 	}
 }
