@@ -5,7 +5,7 @@ Model Context Protocol server for ClickHouse, written in Go.
 Single binary. Works with any ClickHouse deployment (OSS, ClickHouse Cloud,
 self-hosted) — no sidecar, no custom ClickHouse build required.
 
-**Status: v0.1 pre-release. stdio transport only.**
+**Status: v0.2. stdio + HTTP transport, with optional OAuth 2.1 bearer/broker auth.**
 
 ## What's there today
 
@@ -34,14 +34,13 @@ under the user you configure, and **that user's privileges are the only authoriz
 
 ## Roadmap
 
-- **v0.1** — stdio tools: `list_databases`, `list_tables`, `run_query`, `run_statement`; row + byte
-  caps with truncation reason. Authorization delegated to ClickHouse RBAC.
-- **v0.2** — HTTP transport, OAuth 2.0 with S256 PKCE, multi-provider IdP brokering (Google, Microsoft Entra ID, Keycloak, generic OIDC).
-- **later** — DBA operational tools (`system.mutations`, `system.parts`, `system.replication_queue` rollups).
+- **v0.1** — the stdio tools above, with row/byte caps and ClickHouse-RBAC authorization.
+- **v0.2 (done)** — HTTP transport and optional OAuth auth, see [HTTP transport & auth](#http-transport--auth).
+- **next** — DBA operational tools (`system.mutations`, `system.parts`, `system.replication_queue` rollups).
 
 ## Install
 
-Requires Go 1.24+.
+Requires Go 1.25+.
 
 ```sh
 go install github.com/corker/clickhouse-mcp/cmd/clickhouse-mcp@latest
@@ -77,16 +76,54 @@ Then set the connection env vars in your shell or in `.mcp.json`'s `env` block:
 
 Reference: [Claude Code MCP docs](https://code.claude.com/docs/en/mcp).
 
+## HTTP transport & auth
+
+stdio (the default) serves a single local client and needs no auth. To serve remote clients over
+HTTP, set `MCP_TRANSPORT=http` and pick an auth mode with `MCP_AUTH_MODE`. Design:
+[ADR-0007](docs/adr/0007-auth-layered-resource-server-plus-optional-broker.md) (resource server) and
+[ADR-0008](docs/adr/0008-entra-broker-proxy-mode.md) (broker).
+
+| Variable | Default | Notes |
+|---|---|---|
+| `MCP_TRANSPORT` | `stdio` | `http` to serve over HTTP. |
+| `MCP_HTTP_ADDR` | `:8080` | Listen address for HTTP. |
+| `MCP_AUTH_MODE` | `off` | `off` (dev), `bearer`, or `broker`. |
+
+**`bearer`** — validate an OAuth 2.1 access token on every request (the server is a pure resource
+server; clients obtain tokens elsewhere). Authorization stays ClickHouse's; these gate *who* reaches
+the tools.
+
+| Variable | Required | Notes |
+|---|---|---|
+| `OIDC_ISSUER` | yes | Issuer URL; endpoints (incl. JWKS) resolved by discovery. |
+| `MCP_RESOURCE_URI` | yes | This server's canonical identifier; a token's `aud` must equal it (RFC 8707). |
+| `OIDC_IDENTITY_CLAIM` | no | Claim used as the user's identity (default `email`). |
+| `OIDC_REQUIRED_CLAIM` / `OIDC_REQUIRED_VALUE` | no | Optional access gate; both or neither. |
+
+**`broker`** — everything `bearer` does, plus an in-binary interactive OAuth broker so browser clients
+(Claude.ai, IDEs) can log in even against an IdP that lacks Dynamic Client Registration (notably Entra).
+Set `MCP_PUBLIC_URL` (this server's externally reachable base URL) and choose a provider:
+
+| `MCP_BROKER_PROVIDER` | Provider vars | Endpoints |
+|---|---|---|
+| `entra` | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Derived from the tenant id. |
+| `google` | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Fixed Google OAuth endpoints. |
+| `generic` | `OIDC_ISSUER`, `MCP_RESOURCE_URI`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_AUTHORIZE_URL`, `OIDC_TOKEN_URL` | All explicit (any OIDC IdP, e.g. Keycloak). |
+
+For a named provider the audience defaults to the client id; override with `MCP_RESOURCE_URI`.
+`MCP_ALLOWED_REDIRECT_HOSTS` (comma-separated) allows non-loopback client redirect hosts (e.g.
+`claude.ai`); loopback is always allowed. `OIDC_SCOPES` defaults to `openid profile email`.
+
 ## Related projects
 
 | Project | Language | Focus |
 |---|---|---|
 | [`ClickHouse/mcp-clickhouse`](https://github.com/ClickHouse/mcp-clickhouse) | Python | Official reference; includes chDB. |
-| [`Altinity/altinity-mcp`](https://github.com/Altinity/altinity-mcp) | Go | Broadest feature set today; OAuth broker requires companion sidecar (`ch-jwt-verify`) or Antalya-25.8's `token_processors`. |
-| `corker/clickhouse-mcp` (this project) | Go | Single binary, no sidecar, works with vanilla OSS ClickHouse. |
+| [`Altinity/altinity-mcp`](https://github.com/Altinity/altinity-mcp) | Go | Broadest feature set today, incl. dynamic view-tools; its OAuth broker needs a companion sidecar (`ch-jwt-verify`) or Antalya-25.8's `token_processors`. |
+| `corker/clickhouse-mcp` (this project) | Go | Single binary — bearer auth and an interactive OAuth broker are built in, no sidecar; works with vanilla OSS ClickHouse. |
 
-If you need OAuth broker + dynamic view-tools today, use Altinity's server.
-This project prioritises a small dependency surface and a shorter path from
+If you need dynamic view-tools today, use Altinity's server. This project prioritises a small
+dependency surface, an in-binary auth broker (no companion service), and a shorter path from
 `go install` to a working MCP endpoint.
 
 ## License
