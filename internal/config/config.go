@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Transport string
@@ -139,22 +140,30 @@ func loadServer() (ServerConfig, error) {
 
 // loadOIDC reads the bearer-token settings. Issuer and resource URI are required
 // (no safe default — an empty audience would validate any token); the identity
-// claim defaults to email and the access gate is optional.
+// claim defaults to email and the access gate is optional. Values are trimmed so
+// a whitespace-only env var is treated as unset rather than a bad URL.
 func loadOIDC() (OIDCConfig, error) {
-	issuer := envString("OIDC_ISSUER", "")
+	issuer := strings.TrimSpace(envString("OIDC_ISSUER", ""))
 	if issuer == "" {
 		return OIDCConfig{}, fmt.Errorf("OIDC_ISSUER is required when MCP_AUTH_MODE=bearer")
 	}
-	resourceURI := envString("MCP_RESOURCE_URI", "")
+	resourceURI := strings.TrimSpace(envString("MCP_RESOURCE_URI", ""))
 	if resourceURI == "" {
 		return OIDCConfig{}, fmt.Errorf("MCP_RESOURCE_URI is required when MCP_AUTH_MODE=bearer (the audience a token must carry)")
+	}
+	requiredClaim := strings.TrimSpace(envString("OIDC_REQUIRED_CLAIM", ""))
+	requiredValue := envString("OIDC_REQUIRED_VALUE", "")
+	// A gate claim with no value is incoherent — it would deny every legitimate
+	// token — so require both or neither rather than silently locking everyone out.
+	if requiredClaim != "" && requiredValue == "" {
+		return OIDCConfig{}, fmt.Errorf("OIDC_REQUIRED_VALUE is required when OIDC_REQUIRED_CLAIM is set")
 	}
 	return OIDCConfig{
 		Issuer:        issuer,
 		ResourceURI:   resourceURI,
 		IdentityClaim: envString("OIDC_IDENTITY_CLAIM", "email"),
-		RequiredClaim: envString("OIDC_REQUIRED_CLAIM", ""),
-		RequiredValue: envString("OIDC_REQUIRED_VALUE", ""),
+		RequiredClaim: requiredClaim,
+		RequiredValue: requiredValue,
 	}, nil
 }
 

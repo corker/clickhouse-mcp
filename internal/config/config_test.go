@@ -72,6 +72,8 @@ func TestLoad_RejectsInvalidServerConfig(t *testing.T) {
 		{"broker not implemented", map[string]string{"MCP_AUTH_MODE": "broker"}},
 		{"bearer without issuer", map[string]string{"MCP_AUTH_MODE": "bearer", "MCP_RESOURCE_URI": "https://mcp.example"}},
 		{"bearer without resource uri", map[string]string{"MCP_AUTH_MODE": "bearer", "OIDC_ISSUER": "https://idp.example"}},
+		{"whitespace issuer is not set", map[string]string{"MCP_AUTH_MODE": "bearer", "OIDC_ISSUER": "  ", "MCP_RESOURCE_URI": "https://mcp.example"}},
+		{"required claim without value", map[string]string{"MCP_AUTH_MODE": "bearer", "OIDC_ISSUER": "https://idp.example", "MCP_RESOURCE_URI": "https://mcp.example", "OIDC_REQUIRED_CLAIM": "groups"}},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {

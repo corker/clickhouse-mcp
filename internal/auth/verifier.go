@@ -79,11 +79,14 @@ func (v *Verifier) Verify(ctx context.Context, token string, _ *http.Request) (*
 // identity picks the configured identity claim, falling back to preferred_username,
 // email, then sub so an issuer that omits one (e.g. Entra omits email) still yields
 // a stable user id. sub is last: it is always present in a spec-compliant token but
-// is opaque, so a human-readable claim wins when available.
+// is opaque, so a human-readable claim wins when available. Whitespace-only values
+// are treated as absent so they cannot become a collapsing "   " identity.
 func (v *Verifier) identity(claims map[string]any) string {
 	for _, key := range []string{v.cfg.IdentityClaim, "preferred_username", "email", "sub"} {
-		if s, ok := claims[key].(string); ok && s != "" {
-			return s
+		if s, ok := claims[key].(string); ok {
+			if trimmed := strings.TrimSpace(s); trimmed != "" {
+				return trimmed
+			}
 		}
 	}
 	return ""

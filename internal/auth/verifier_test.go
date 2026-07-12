@@ -39,6 +39,8 @@ func TestIdentity(t *testing.T) {
 		{"falls back to sub last", "email", map[string]any{"sub": "opaque-id"}, "opaque-id"},
 		{"nothing usable -> empty", "email", map[string]any{"role": "admin"}, ""},
 		{"empty string skipped", "email", map[string]any{"email": "", "preferred_username": "ab"}, "ab"},
+		{"whitespace-only skipped (would collapse sessions)", "email", map[string]any{"email": "   ", "preferred_username": "ab"}, "ab"},
+		{"trims the returned value", "email", map[string]any{"email": " a@b.c "}, "a@b.c"},
 	}
 	for _, tt := range tests {
 		v := &Verifier{}
