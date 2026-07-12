@@ -19,11 +19,13 @@ const resourceURI = "https://mcp.example"
 func newTestVerifier(t *testing.T, fi *fakeIssuer, requiredClaim, requiredValue string) *Verifier {
 	t.Helper()
 	v, err := NewVerifier(context.Background(), config.OIDCConfig{
-		Issuer:        fi.issuerURL(),
-		ResourceURI:   resourceURI,
-		IdentityClaim: "email",
-		RequiredClaim: requiredClaim,
-		RequiredValue: requiredValue,
+		Issuer:      fi.issuerURL(),
+		ResourceURI: resourceURI,
+		AccessPolicy: config.AccessPolicy{
+			IdentityClaim: "email",
+			RequiredClaim: requiredClaim,
+			RequiredValue: requiredValue,
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
@@ -106,6 +108,49 @@ func TestVerify_Rejects(t *testing.T) {
 				t.Errorf("want rejection at the %q gate, got %v", tt.wantMsg, err)
 			}
 		})
+	}
+}
+
+// End-to-end aud seam: the audience a named provider DERIVES must be the one the
+// verifier ENFORCES. Config tests prove the value is computed and Verify tests prove
+// the verifier enforces whatever aud it is given; only this test wires the derived
+// value into the verifier to prove they are the same audience.
+func TestVerify_EnforcesDerivedAudience(t *testing.T) {
+	t.Setenv("MCP_AUTH_MODE", "broker")
+	t.Setenv("MCP_TRANSPORT", "http")
+	t.Setenv("MCP_BROKER_PROVIDER", "entra")
+	t.Setenv("AZURE_TENANT_ID", "tenant-1")
+	t.Setenv("AZURE_CLIENT_ID", "the-client-id")
+	t.Setenv("AZURE_CLIENT_SECRET", "secret")
+	t.Setenv("MCP_PUBLIC_URL", "https://mcp.example")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	derivedAud := cfg.Server.OIDC.ResourceURI
+	if derivedAud != "the-client-id" {
+		t.Fatalf("precondition: entra should derive aud=client id, got %q", derivedAud)
+	}
+
+	fi := newFakeIssuer(t)
+	v, err := NewVerifier(context.Background(), config.OIDCConfig{
+		Issuer:       fi.issuerURL(),
+		ResourceURI:  derivedAud, // the aud the provider derived, not a hardcoded constant
+		AccessPolicy: cfg.Server.OIDC.AccessPolicy,
+	})
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
+	// A token carrying the derived audience verifies; one carrying the server URL
+	// (the intuitive-but-wrong value Entra never stamps) is rejected.
+	good := fi.mint(t, map[string]any{"aud": derivedAud, "email": "u@e.com"})
+	if _, err := v.Verify(context.Background(), good, nil); err != nil {
+		t.Errorf("token with the derived audience must verify: %v", err)
+	}
+	bad := fi.mint(t, map[string]any{"aud": "https://mcp.example", "email": "u@e.com"})
+	if _, err := v.Verify(context.Background(), bad, nil); err == nil {
+		t.Error("token with the server URL as audience must be rejected (Entra stamps aud=client id)")
 	}
 }
 
