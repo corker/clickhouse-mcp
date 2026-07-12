@@ -139,7 +139,7 @@ func loadServer() (ServerConfig, error) {
 	// A named provider (entra) derives the Entra-specific issuer/endpoints/audience
 	// from a tenant id so the operator does not hand-wire them. Only broker mode
 	// reads it; bearer mode always uses the explicit generic OIDC vars.
-	var derived *entraDerived
+	var derived *derivedProvider
 	if authMode == AuthBroker {
 		d, err := deriveProvider()
 		if err != nil {
@@ -175,9 +175,9 @@ func loadServer() (ServerConfig, error) {
 	}, nil
 }
 
-// entraDerived holds the values a named provider computes so the operator need not
+// derivedProvider holds the values a named provider computes so the operator need not
 // supply them. nil means the generic provider (all endpoints explicit).
-type entraDerived struct {
+type derivedProvider struct {
 	Issuer       string
 	ResourceURI  string
 	AuthorizeURL string
@@ -190,7 +190,7 @@ type entraDerived struct {
 // authorize/token endpoints, and audience (defaulting to the client id — an Entra
 // v2.0 access token's aud is the app id, not the server URL) from AZURE_TENANT_ID.
 // Returns nil for the generic provider, leaving every endpoint explicit.
-func deriveProvider() (*entraDerived, error) {
+func deriveProvider() (*derivedProvider, error) {
 	provider := strings.TrimSpace(envString("MCP_BROKER_PROVIDER", "generic"))
 	switch provider {
 	case "generic":
@@ -205,7 +205,7 @@ func deriveProvider() (*entraDerived, error) {
 			}
 		}
 		base := "https://login.microsoftonline.com/" + tenant
-		return &entraDerived{
+		return &derivedProvider{
 			Issuer:       base + "/v2.0",
 			ResourceURI:  strings.TrimSpace(envString("MCP_RESOURCE_URI", clientID)),
 			AuthorizeURL: base + "/oauth2/v2.0/authorize",
@@ -222,7 +222,7 @@ func deriveProvider() (*entraDerived, error) {
 // (no safe default — an empty audience would validate any token); the identity
 // claim defaults to email and the access gate is optional. Values are trimmed so
 // a whitespace-only env var is treated as unset rather than a bad URL.
-func loadOIDC(derived *entraDerived) (OIDCConfig, error) {
+func loadOIDC(derived *derivedProvider) (OIDCConfig, error) {
 	issuer := strings.TrimSpace(envString("OIDC_ISSUER", ""))
 	resourceURI := strings.TrimSpace(envString("MCP_RESOURCE_URI", ""))
 	if derived != nil {
@@ -255,7 +255,7 @@ func loadOIDC(derived *entraDerived) (OIDCConfig, error) {
 // endpoints, and pre-registered client id/secret are all required — the broker
 // cannot function without any of them, so fail loudly rather than serve a broken
 // login flow.
-func loadBroker(derived *entraDerived) (BrokerConfig, error) {
+func loadBroker(derived *derivedProvider) (BrokerConfig, error) {
 	required := func(key string) (string, error) {
 		v := strings.TrimSpace(envString(key, ""))
 		if v == "" {
