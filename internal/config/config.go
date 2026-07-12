@@ -18,8 +18,7 @@ const (
 	TransportHTTP  Transport = "http"
 )
 
-// AuthMode selects how HTTP requests are authenticated (ADR-0007). off and bearer
-// are wired; broker (the interactive metadata/DCR layer) is not yet.
+// AuthMode selects how HTTP requests are authenticated (ADR-0007).
 type AuthMode string
 
 const (

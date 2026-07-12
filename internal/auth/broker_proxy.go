@@ -18,7 +18,7 @@ import (
 
 const maxOAuthField = 4096 // cap OAuth query/form values against DoS.
 
-// ProxyConfig adds the authorize/callback/token proxy to BrokerConfig (slice 3b).
+// ProxyConfig adds the authorize/callback/token proxy to BrokerConfig.
 // The broker registers ONE redirect URI with the upstream — its own /oauth/callback
 // — and carries the client's real redirect_uri through a signed state, so the
 // upstream never needs to know client callback URLs (Entra's one-URI constraint).
@@ -249,8 +249,7 @@ func (p ProxyConfig) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 // HandleToken proxies the code exchange to the upstream token endpoint,
 // server-to-server, adding the client_id/secret the public client does not hold.
-// The client's PKCE code_verifier is passed through. The upstream's token
-// response is returned verbatim.
+// The client's PKCE code_verifier is passed through.
 func (p ProxyConfig) HandleToken(w http.ResponseWriter, r *http.Request) {
 	corsMetadata(w, "POST, OPTIONS")
 	if r.Method == http.MethodOptions {
