@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/corker/clickhouse-mcp/internal/config"
 )
 
 // testClient is a dedicated client so tests never share a connection pool with
@@ -45,7 +47,7 @@ func serveOnFreePort(t *testing.T, s *mcp.Server) (addr string, stop func(), don
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done = make(chan error, 1)
-	go func() { done <- runHTTP(ctx, s, ln) }()
+	go func() { done <- runHTTP(ctx, s, ln, nil) }()
 	return ln.Addr().String(), cancel, done
 }
 
@@ -153,7 +155,7 @@ func TestRunHTTP_PropagatesServeError(t *testing.T) {
 	}
 	s := mcp.NewServer(&mcp.Implementation{Name: "test"}, nil)
 	done := make(chan error, 1)
-	go func() { done <- runHTTP(context.Background(), s, ln) }() // ctx never cancels
+	go func() { done <- runHTTP(context.Background(), s, ln, nil) }() // ctx never cancels
 
 	// Closing the listener makes Serve return a real error regardless of whether
 	// it has reached Accept yet, so no synchronizing sleep is needed.
@@ -166,5 +168,27 @@ func TestRunHTTP_PropagatesServeError(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("runHTTP hung after listener closed")
+	}
+}
+
+func TestAuthMiddleware_OffIsNil(t *testing.T) {
+	mw, err := authMiddleware(context.Background(), config.ServerConfig{AuthMode: config.AuthOff})
+	if err != nil || mw != nil {
+		t.Errorf("auth off should yield no middleware: mw=%v err=%v", mw != nil, err)
+	}
+}
+
+func TestAuthMiddleware_BearerFailsOnBadIssuer(t *testing.T) {
+	// Discovery must fail fast at startup, not per-request, when the issuer is
+	// unreachable/invalid.
+	_, err := authMiddleware(context.Background(), config.ServerConfig{
+		AuthMode: config.AuthBearer,
+		OIDC: config.OIDCConfig{
+			Issuer:      "http://127.0.0.1:1/nonexistent", // nothing listening
+			ResourceURI: "https://mcp.example",
+		},
+	})
+	if err == nil {
+		t.Error("bearer with an unreachable issuer should error at startup")
 	}
 }
