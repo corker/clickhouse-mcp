@@ -49,6 +49,27 @@ type ServerConfig struct {
 	// Not validated here — a malformed value fails at net.Listen in main.
 	HTTPAddr string
 	AuthMode AuthMode
+	// OIDC is populated (and required) only when AuthMode is bearer or broker.
+	OIDC OIDCConfig
+}
+
+// OIDCConfig holds bearer-token validation settings (ADR-0007/0003). Names match
+// the CONTEXT.md glossary.
+type OIDCConfig struct {
+	// Issuer is the OIDC provider's issuer URL; its endpoints (incl. JWKS) are
+	// resolved by discovery. Required for bearer/broker.
+	Issuer string
+	// ResourceURI is this server's canonical identifier; a token's aud must equal
+	// it (RFC 8707), so a token minted for another service cannot be replayed here.
+	ResourceURI string
+	// IdentityClaim names the token claim used as the user's identity (default
+	// email, then preferred_username).
+	IdentityClaim string
+	// RequiredClaim/RequiredValue gate access: the token's RequiredClaim must
+	// contain RequiredValue. Empty RequiredClaim means authenticate-only (no
+	// access gate) — every valid token from the issuer is allowed.
+	RequiredClaim string
+	RequiredValue string
 }
 
 func Load() (*Config, error) {
@@ -93,18 +114,47 @@ func loadServer() (ServerConfig, error) {
 		return ServerConfig{}, fmt.Errorf("MCP_AUTH_MODE: unknown mode %q (want off, bearer, or broker)", authMode)
 	}
 
-	// bearer/broker are valid modes (above) but not wired yet; fail loudly rather
-	// than serve unauthenticated while the operator believes auth is on. Narrow
-	// this guard as each mode's request-path lands, or a configured mode will be
-	// accepted here but silently do nothing.
-	if authMode != AuthOff {
-		return ServerConfig{}, fmt.Errorf("MCP_AUTH_MODE=%s is not implemented yet; only off is available in this build", authMode)
+	// broker is a valid mode but its interactive layer is not wired yet; fail
+	// loudly rather than serve without it. Drop this once broker lands.
+	if authMode == AuthBroker {
+		return ServerConfig{}, fmt.Errorf("MCP_AUTH_MODE=broker is not implemented yet; use off or bearer")
+	}
+
+	var oidc OIDCConfig
+	if authMode == AuthBearer {
+		o, err := loadOIDC()
+		if err != nil {
+			return ServerConfig{}, err
+		}
+		oidc = o
 	}
 
 	return ServerConfig{
 		Transport: transport,
 		HTTPAddr:  envString("MCP_HTTP_ADDR", ":8080"),
 		AuthMode:  authMode,
+		OIDC:      oidc,
+	}, nil
+}
+
+// loadOIDC reads the bearer-token settings. Issuer and resource URI are required
+// (no safe default — an empty audience would validate any token); the identity
+// claim defaults to email and the access gate is optional.
+func loadOIDC() (OIDCConfig, error) {
+	issuer := envString("OIDC_ISSUER", "")
+	if issuer == "" {
+		return OIDCConfig{}, fmt.Errorf("OIDC_ISSUER is required when MCP_AUTH_MODE=bearer")
+	}
+	resourceURI := envString("MCP_RESOURCE_URI", "")
+	if resourceURI == "" {
+		return OIDCConfig{}, fmt.Errorf("MCP_RESOURCE_URI is required when MCP_AUTH_MODE=bearer (the audience a token must carry)")
+	}
+	return OIDCConfig{
+		Issuer:        issuer,
+		ResourceURI:   resourceURI,
+		IdentityClaim: envString("OIDC_IDENTITY_CLAIM", "email"),
+		RequiredClaim: envString("OIDC_REQUIRED_CLAIM", ""),
+		RequiredValue: envString("OIDC_REQUIRED_VALUE", ""),
 	}, nil
 }
 
