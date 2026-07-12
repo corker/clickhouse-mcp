@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
@@ -60,18 +61,27 @@ func (v *Verifier) Verify(ctx context.Context, token string, _ *http.Request) (*
 		return nil, fmt.Errorf("%w: missing required claim %s=%s", mcpauth.ErrInvalidToken, v.cfg.RequiredClaim, v.cfg.RequiredValue)
 	}
 
+	// UserID binds the session to a principal (the SDK uses it to prevent session
+	// hijacking). An empty id would collapse distinct no-identity principals into
+	// one, so fail closed rather than issue a session with no identity.
+	userID := v.identity(claims)
+	if userID == "" {
+		return nil, fmt.Errorf("%w: token carries no usable identity claim", mcpauth.ErrInvalidToken)
+	}
+
 	return &mcpauth.TokenInfo{
-		UserID:     v.identity(claims),
+		UserID:     userID,
 		Expiration: idToken.Expiry,
 		Extra:      claims,
 	}, nil
 }
 
-// identity picks the configured identity claim, falling back to preferred_username
-// then email so an issuer that omits one (e.g. Entra omits email) still yields a
-// stable user id.
+// identity picks the configured identity claim, falling back to preferred_username,
+// email, then sub so an issuer that omits one (e.g. Entra omits email) still yields
+// a stable user id. sub is last: it is always present in a spec-compliant token but
+// is opaque, so a human-readable claim wins when available.
 func (v *Verifier) identity(claims map[string]any) string {
-	for _, key := range []string{v.cfg.IdentityClaim, "preferred_username", "email"} {
+	for _, key := range []string{v.cfg.IdentityClaim, "preferred_username", "email", "sub"} {
 		if s, ok := claims[key].(string); ok && s != "" {
 			return s
 		}
@@ -89,15 +99,17 @@ func contains(list []string, want string) bool {
 }
 
 // accessAllowed reports whether the access gate passes. An empty requiredClaim
-// means authenticate-only (no gate). The claim may be a single string or a list
-// (e.g. groups/roles).
+// means authenticate-only (no gate). The claim may be a JSON array (groups/roles)
+// or a string; a string is treated as space-delimited (as OAuth scope and some
+// issuers' role claims are), so "admin mcp-users" grants membership of either.
+// Any other shape (number, object, absent) fails closed.
 func accessAllowed(claims map[string]any, requiredClaim, requiredValue string) bool {
 	if requiredClaim == "" {
 		return true
 	}
 	switch c := claims[requiredClaim].(type) {
 	case string:
-		return c == requiredValue
+		return contains(strings.Fields(c), requiredValue)
 	case []any:
 		for _, item := range c {
 			if s, ok := item.(string); ok && s == requiredValue {

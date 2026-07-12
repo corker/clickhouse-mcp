@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -63,16 +64,22 @@ func main() {
 // verifier is built here so a discovery failure aborts startup rather than
 // surfacing per-request.
 func authMiddleware(ctx context.Context, cfg config.ServerConfig) (func(http.Handler) http.Handler, error) {
-	if cfg.AuthMode != config.AuthBearer {
+	switch cfg.AuthMode {
+	case config.AuthOff:
 		return nil, nil
+	case config.AuthBearer:
+		v, err := auth.NewVerifier(ctx, cfg.OIDC)
+		if err != nil {
+			return nil, err
+		}
+		return mcpauth.RequireBearerToken(v.Verify, &mcpauth.RequireBearerTokenOptions{
+			ResourceMetadataURL: cfg.OIDC.ResourceURI,
+		}), nil
+	default:
+		// A mode config accepts but that isn't wired here (e.g. broker) must fail
+		// closed — never fall through to an unauthenticated server.
+		return nil, fmt.Errorf("auth mode %q has no HTTP gate wired", cfg.AuthMode)
 	}
-	v, err := auth.NewVerifier(ctx, cfg.OIDC)
-	if err != nil {
-		return nil, err
-	}
-	return mcpauth.RequireBearerToken(v.Verify, &mcpauth.RequireBearerTokenOptions{
-		ResourceMetadataURL: cfg.OIDC.ResourceURI,
-	}), nil
 }
 
 // runHTTP serves the MCP server over streamable HTTP on ln until the context is

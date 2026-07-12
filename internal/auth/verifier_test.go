@@ -14,6 +14,8 @@ func TestAccessAllowed(t *testing.T) {
 		{"string claim mismatch", map[string]any{"role": "user"}, "role", "admin", false},
 		{"list claim contains value", map[string]any{"groups": []any{"a", "mcp-users"}}, "groups", "mcp-users", true},
 		{"list claim missing value", map[string]any{"groups": []any{"a", "b"}}, "groups", "mcp-users", false},
+		{"space-delimited string contains value", map[string]any{"roles": "admin mcp-users"}, "roles", "mcp-users", true},
+		{"space-delimited string missing value", map[string]any{"roles": "admin viewer"}, "roles", "mcp-users", false},
 		{"claim absent", map[string]any{}, "groups", "mcp-users", false},
 		{"claim wrong type (number)", map[string]any{"groups": 42}, "groups", "mcp-users", false},
 	}
@@ -33,8 +35,9 @@ func TestIdentity(t *testing.T) {
 	}{
 		{"configured claim wins", "email", map[string]any{"email": "a@b.c", "preferred_username": "ab"}, "a@b.c"},
 		{"falls back to preferred_username", "email", map[string]any{"preferred_username": "ab"}, "ab"},
-		{"falls back to email", "sub", map[string]any{"email": "a@b.c"}, "a@b.c"},
-		{"none present", "email", map[string]any{"sub": "x"}, ""},
+		{"falls back to email", "role", map[string]any{"email": "a@b.c"}, "a@b.c"},
+		{"falls back to sub last", "email", map[string]any{"sub": "opaque-id"}, "opaque-id"},
+		{"nothing usable -> empty", "email", map[string]any{"role": "admin"}, ""},
 		{"empty string skipped", "email", map[string]any{"email": "", "preferred_username": "ab"}, "ab"},
 	}
 	for _, tt := range tests {

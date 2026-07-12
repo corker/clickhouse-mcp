@@ -72,6 +72,10 @@ func TestVerify_Rejects(t *testing.T) {
 		{"signed by a different key (JWKS mismatch)", func() string {
 			return other.mint(t, map[string]any{"aud": resourceURI, "iss": fi.issuerURL()})
 		}},
+		{"no identity claim (would collapse sessions)", func() string {
+			// valid aud/exp/iss but no email/preferred_username/sub
+			return fi.mint(t, map[string]any{"aud": resourceURI})
+		}},
 		{"garbage", func() string { return "not.a.jwt" }},
 	}
 	v := newTestVerifier(t, fi, "", "")
